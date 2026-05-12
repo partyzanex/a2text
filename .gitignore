@@ -1,0 +1,62 @@
+# Binaries
+/a2text
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+*.out
+*.test
+*.log
+coverage.txt
+coverage.xml
+coverage.out
+
+# Go cache
+.gocache/
+
+# Environment files
+.env
+.env.local
+config.local.yaml
+
+# Models (large binary files)
+*.bin
+*.gguf
+
+# Temporary files
+tmp/
+
+# Test caches
+tests/.cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# whisper.cpp build artifacts
+whisper.cpp/build/
+whisper.cpp/*.o
+whisper.cpp/*.a
+
+# Vendor directory
+vendor/
+
+# Tools
+.serena/
+.claude/
+.codex
+.qwen/
+
+# graphify: keep human-readable reports, ignore derived artifacts
+.graphify/*
+!.graphify/GRAPH_REPORT.md
+graphify-out/
+
+# Local DB
+a2text.db*

@@ -1,0 +1,51 @@
+[Unit]
+Description=a2text voice daemon (push-to-talk dictation)
+Documentation=https://gitlab.com/xmsger/a2text
+
+# graphical-session.target ensures we boot once a desktop session is active.
+# pipewire/pipewire-pulse cover the audio capture backend selection inside
+# the daemon — without these the depcheck at startup would land in a
+# restart loop until PipeWire is up.
+After=graphical-session.target pipewire.service pipewire-pulse.service
+Wants=pipewire.service pipewire-pulse.service
+PartOf=graphical-session.target
+
+[Service]
+# Type=notify is critical: systemd waits for sd_notify(READY=1) before
+# marking the unit active, and the daemon's per-state STATUS= updates
+# show up in `systemctl --user status a2text-voice`.
+Type=notify
+NotifyAccess=main
+
+# IMPORTANT: --daemon forces the daemon-only entry point. Without it
+# `a2text` (no flags) self-bootstraps, which under systemd would mean
+# "if a daemon is already running, send Toggle and exit" — making this
+# unit go inactive immediately. Always keep --daemon here.
+ExecStart=/usr/local/bin/a2text --daemon
+
+# systemd --user often has a stripped PATH. Spell it out so the daemon's
+# subprocess lookups for pw-record / parecord / wl-copy succeed.
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+# Default config location for a per-user install. Adjust if you keep your
+# config elsewhere; leave commented to use the default search path
+# (./a2text.yaml or ./app/a2text.yaml relative to WorkingDirectory, which
+# is unspecified under systemd → effectively unreliable).
+Environment="A2TEXT_CONFIG=%h/.config/a2text/a2text.yaml"
+
+# Restart on crash but not on clean exit (e.g. depcheck failure with
+# missing required deps would loop forever otherwise).
+Restart=on-failure
+RestartSec=5
+
+# Give the daemon time to drain in-flight transcription before SIGKILL.
+TimeoutStopSec=20
+
+# Hardening NOT enabled by default: ProtectHome=read-only would block the
+# unix socket in $XDG_RUNTIME_DIR (usually under /run/user/UID, fine) and
+# any writes to ~/.cache or ~/.local (used for whisper models). If you
+# want hardening, add it after testing per-user paths and listing them
+# in ReadWritePaths=.
+
+[Install]
+WantedBy=graphical-session.target

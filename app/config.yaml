@@ -1,0 +1,46 @@
+provider: "go-whisper"
+language: "ru"
+
+go_whisper:
+  url: "http://localhost:9081"
+  prefix: "/api/whisper"
+  model: "ggml-small"
+  timeout: "10m"
+  auto_download: true
+
+model_path: ""
+
+cloud_provider: ""
+cloud_api_key: ""
+cloud_base_url: ""
+
+temp_dir: ""
+convert_timeout: "60s"
+transcribe_timeout: "10m"
+
+log_level: "debug"
+
+capture:
+  backend: "auto"
+  sample_rate: 16000
+  channels: 1
+  max_duration: "60s"
+
+output:
+  mode: "clipboard"
+  autopaste_command: "auto"
+
+daemon:
+  socket_path: ""
+  shutdown_grace_period: "15s"
+
+hotkey:
+  enabled: true
+  key: "Q"
+  modifiers: ["super"]
+  backend: "auto"
+  mode: "toggle"
+
+privacy:
+  keep_audio: false
+  log_transcript: false

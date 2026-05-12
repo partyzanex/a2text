@@ -1,0 +1,250 @@
+# https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+version: "2"
+
+linters:
+  # Enable all linters by default (v2: use `default: all`).
+  default: all
+
+  # Keep roughly the same disabled set as in v1 (drop fully-deprecated ones).
+  disable:
+    - wsl
+    - nonamedreturns
+    - testpackage
+    - paralleltest
+    - tparallel
+    - err113
+    - noinlineerr
+    - ireturn
+
+  # Linters configuration (migrated from `linters-settings` in v1).
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: true
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+      settings:
+        printf:
+          funcs:
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    exhaustruct:
+      include:
+        - ^Config$
+
+    gocyclo:
+      min-complexity: 12
+
+    depguard:
+      rules:
+        main:
+          list-mode: lax
+          allow:
+            - $gostd
+
+    dupl:
+      threshold: 100
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    ireturn:
+      allow:
+        - Closure
+        - error
+        - slog.Handler
+        - context.Context
+        - generic
+        - GenerateIntRes
+        - GetRequestByIDRes
+        - GetTokensRes
+
+    lll:
+      line-length: 121
+      tab-width: 2
+
+    unparam:
+      check-exported: false
+
+    nakedret:
+      max-func-lines: 31
+
+    prealloc:
+      simple: true
+      range-loops: false
+      for-loops: false
+
+    gocritic:
+      enabled-checks:
+        # diagnostic
+        - badLock
+        - badRegexp
+        - builtinShadowDecl
+        - emptyDecl
+        - evalOrder
+        - externalErrorReassign
+        - filepathJoin
+        - nilValReturn
+        - regexpPattern
+        - returnAfterHttpError
+        - sloppyReassign
+        - sortSlice
+        - sprintfQuotedString
+        - sqlQuery
+        - syncMapLoadAndDelete
+        - truncateCmp
+        - unnecessaryDefer
+        - weakCond
+        # style
+        - boolExprSimplify
+        - builtinShadow
+        - commentedOutImport
+        - deferUnlambda
+        - docStub
+        - dupImport
+        - emptyStringTest
+        - hexLiteral
+        - httpNoBody
+        - importShadow
+        - initClause
+        - methodExprCall
+        - nestingReduce
+        - octalLiteral
+        - paramTypeCombine
+        - preferFilepathJoin
+        - redundantSprint
+        - regexpSimplify
+        - ruleguard
+        - stringConcatSimplify
+        - timeExprSimplify
+        - tooManyResultsChecker
+        - typeAssertChain
+        - typeDefFirst
+        - typeUnparen
+        - unlabelStmt
+        - unnamedResult
+        - unnecessaryBlock
+        - yodaStyleExpr
+        # performance
+        - appendCombine
+        - equalFold
+        - hugeParam
+        - indexAlloc
+        - preferDecodeRune
+        - preferFprint
+        - preferStringWriter
+        - preferWriteByte
+        - rangeExprCopy
+        - rangeValCopy
+        - sliceClear
+        - stringXbytes
+      settings:
+        rangeValCopy:
+          sizeThreshold: 32
+
+    tagliatelle:
+      case:
+        use-field-name: true
+        rules:
+          json: snake
+          yaml: camel
+
+    varnamelen:
+      min-name-length: 2
+      ignore-names:
+        - r
+        - w
+        - n
+        - i
+        - j
+        - b
+        - m
+
+    revive:
+      confidence: 0.4
+
+  # Exclusions (migrated from v1 `issues.exclude`, `exclude-rules`, `exclude-dirs`).
+  exclusions:
+    rules:
+      # v1 issues.exclude mapped to text-based rules
+      - text: "Function 'Run' has too many statements"
+        linters:
+          - funlen
+      - text: "Function 'Run' is too long"
+        linters:
+          - funlen
+      - text: "cyclomatic complexity [0-9]+ of func `Run` is high"
+        linters:
+          - gocyclo
+      - text: "exported (method|function|type|const|var) (.+) should have comment"
+        linters:
+          - revive
+      - text: "comment on exported (method|function|type|const|var) (.+) should be of the form"
+        linters:
+          - revive
+
+      # v1 issues.exclude-rules mapped 1:1
+      - linters:
+          - funlen
+          - wsl
+          - wrapcheck
+        source: "^func Test"
+
+      - linters:
+          - lll
+        source: "^//go:generate "
+
+      - path: _test\.go
+        linters:
+          - err113
+          - dupl
+          - wrapcheck
+          - govet
+          - bodyclose
+          - revive
+          - gocritic
+          - usestdlibvars
+          - noctx
+          - errcheck
+          - goconst
+          - gosec
+          - ireturn
+          - forcetypeassert
+          - staticcheck
+          - dogsled
+
+      - path: testutils/*
+        linters:
+          - errcheck
+
+    # v1 issues.exclude-dirs mapped to v2 exclusions.paths
+    paths:
+      - internal/api/v1
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 10m
+  issues-exit-code: 1
+  tests: true
+  build-tags:
+    - integration
+  go: '1.25'
+
+# In v2, gofmt lives under `formatters`, not as a linter.
+formatters:
+  settings:
+    gofmt:
+      simplify: true
