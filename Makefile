@@ -193,6 +193,17 @@ uninstall:
 	rm -f $(XDG_DATA_HOME)/applications/a2text.desktop
 	update-desktop-database $(XDG_DATA_HOME)/applications/ 2>/dev/null || true
 
+# install-hotkey: register the global keyboard shortcut via `a2text setup`.
+# Requires the binary to be installed first (make install).
+.PHONY: install-hotkey
+install-hotkey:
+	$(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME) setup
+
+# uninstall-hotkey: remove the keyboard shortcut registered by install-hotkey.
+.PHONY: uninstall-hotkey
+uninstall-hotkey:
+	$(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME) setup --undo
+
 # --- go.mk bootstrap ---
 
 go.mk:

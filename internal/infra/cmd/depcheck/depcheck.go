@@ -13,8 +13,6 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/partyzanex/a2text/pkg/hotkey"
-
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 
@@ -56,11 +54,6 @@ type Env struct {
 	// WhisperCppAvailable reports whether this binary was compiled with the
 	// whisper-cpp CGo backend linked in (determined by the "whisper" build tag).
 	WhisperCppAvailable func() bool
-
-	// PortalAvailable reports whether org.freedesktop.portal.GlobalShortcuts
-	// is registered on the D-Bus session bus. Backed by hotkey.IsPortalAvailable
-	// in production; tests may inject a stub. nil means "skip the probe".
-	PortalAvailable func() bool
 }
 
 // DefaultEnv returns an Env backed by the real OS, filesystem, and network.
@@ -70,7 +63,6 @@ func DefaultEnv() Env {
 		StatFile:            os.Stat,
 		HTTPHead:            defaultHTTPHead,
 		WhisperCppAvailable: defaultWhisperCppAvailable,
-		PortalAvailable:     hotkey.IsPortalAvailable,
 	}
 }
 

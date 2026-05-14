@@ -15,11 +15,23 @@ import (
 	"github.com/partyzanex/a2text/internal/domain"
 	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/tray"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
-	"github.com/partyzanex/a2text/pkg/hotkey"
 )
 
-const shutdownTimeout = 30 * time.Second
+const (
+	shutdownTimeout = 30 * time.Second
+	// toggleMinInterval is the minimum time between accepted Toggle events.
+	// Prevents GNOME key-repeat from spawning multiple rapid-fire `a2text`
+	// invocations that alternate start/stop 30 ms apart.
+	toggleMinInterval = 500 * time.Millisecond
+	// stateChBufSize is the capacity of the daemon's internal state-change
+	// notification channel. Non-blocking sends drop messages when the channel
+	// is full; a buffer of 16 is enough to absorb a full recording cycle
+	// (idle→recording→transcribing→delivering→idle) several times over
+	// without stalling the state machine.
+	stateChBufSize = 16
+)
 
 // Daemon ties together state machine, IPC, sd_notify, voice use case, and
 // the recording/transcription/output adapters into the long-running
@@ -47,6 +59,15 @@ type Daemon struct {
 	// types into the constructor signature.
 	hotkey voice.HotkeyListener
 
+	// tray is an optional system-tray icon. When non-nil it is started in
+	// Serve and exits when ctx is cancelled. Wired by callers via AttachTray.
+	tray *tray.Tray
+
+	// notifyCh carries state-machine transitions to any interested in-process
+	// consumer (currently the tray). Sends are non-blocking — a lagging
+	// consumer causes drops, not stalls.
+	notifyCh chan domain.State
+
 	// hotkeyMode caches cfg.Hotkey.Mode so HotkeyHandler doesn't read
 	// through the config pointer on the hot path. Default "" maps to toggle.
 	hotkeyMode config.VoiceHotkeyMode
@@ -66,6 +87,10 @@ type Daemon struct {
 	recordingCancel context.CancelFunc
 
 	maxRecord time.Duration
+
+	// toggleMu guards lastToggleAt for the debounce check.
+	toggleMu     sync.Mutex
+	lastToggleAt time.Time
 
 	shutdownOnce sync.Once
 	shutdownErr  error
@@ -118,8 +143,9 @@ func NewDaemon(deps *DaemonDeps) *Daemon {
 		}
 	}
 
+	notifyCh := make(chan domain.State, stateChBufSize)
 	notifier := sysd.NewSdNotifier(deps.Log)
-	machine := voice.NewMachine(sysd.MakeStateListener(notifier, deps.Log))
+	machine := voice.NewMachine(makeNotifyListener(sysd.MakeStateListener(notifier, deps.Log), notifyCh))
 
 	return &Daemon{
 		cfg:         deps.Cfg,
@@ -130,6 +156,7 @@ func NewDaemon(deps *DaemonDeps) *Daemon {
 		transcriber: closer,
 		maxRecord:   pickMaxRecord(deps.Cfg),
 		hotkeyMode:  deps.Cfg.Hotkey.Mode,
+		notifyCh:    notifyCh,
 	}
 }
 
@@ -139,6 +166,34 @@ func NewDaemon(deps *DaemonDeps) *Daemon {
 // stopped the old one first).
 func (d *Daemon) AttachHotkey(hk voice.HotkeyListener) {
 	d.hotkey = hk
+}
+
+// AttachTray wires an optional system-tray icon. Must be called before
+// Serve. The tray receives state-change notifications via notifyCh and its
+// Run method is started in a goroutine inside Serve.
+func (d *Daemon) AttachTray(tr *tray.Tray) {
+	d.tray = tr
+	tr.SetInputCh(d.notifyCh)
+}
+
+// Toggle advances the state machine by EventToggle and dispatches the
+// resulting action. Used by the tray icon to trigger recording without an
+// IPC round-trip.
+func (d *Daemon) Toggle(ctx context.Context) {
+	if !d.acceptToggle() {
+		d.log.DebugContext(ctx, "voice: tray toggle debounced")
+
+		return
+	}
+
+	_, action, err := d.machine.Apply(domain.EventToggle)
+	if err != nil {
+		d.log.DebugContext(ctx, "voice: tray toggle rejected", slog.Any("err", err))
+
+		return
+	}
+
+	d.dispatch(ctx, action)
 }
 
 // HotkeyHandler returns a voice.Handler that maps hotkey edges to state
@@ -162,6 +217,14 @@ func (d *Daemon) HotkeyHandler() voice.Handler {
 			d.log.DebugContext(ctx, "voice: hotkey edge ignored for current mode",
 				slog.String("edge", hotkeyEventString(evt)),
 				slog.String("mode", string(d.hotkeyMode)),
+			)
+
+			return
+		}
+
+		if event == domain.EventToggle && !d.acceptToggle() {
+			d.log.DebugContext(ctx, "voice: hotkey toggle debounced",
+				slog.String("edge", hotkeyEventString(evt)),
 			)
 
 			return
@@ -273,6 +336,10 @@ func (d *Daemon) Serve(ctx context.Context, socketPath string) error {
 		go d.runHotkey(ctx)
 	}
 
+	if d.tray != nil {
+		go d.tray.Run(ctx)
+	}
+
 	go func() {
 		<-ctx.Done()
 
@@ -365,12 +432,35 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	return d.shutdownErr
 }
 
+// acceptToggle returns true when the Toggle should be processed.
+//
+// Two cases always pass without touching the timer:
+//   - Toggle from domain.StateRecording is a stop-recording intent and must
+//     never be rate-limited — the user decides when to stop.
+//
+// All other states (typically Idle or Error) are subject to the debounce:
+// only the first Toggle per toggleMinInterval window is accepted, which
+// prevents GNOME key-repeat from spawning back-to-back recording cycles.
+func (d *Daemon) acceptToggle() bool {
+	if d.machine.State() == domain.StateRecording {
+		return true
+	}
+
+	d.toggleMu.Lock()
+	defer d.toggleMu.Unlock()
+
+	if time.Since(d.lastToggleAt) < toggleMinInterval {
+		return false
+	}
+
+	d.lastToggleAt = time.Now()
+
+	return true
+}
+
 // runHotkey supervises the hotkey listener for the daemon's lifetime. Listen
 // returns nil after Stop and ctx.Err() after cancellation; both are clean
-// exits. Portal-specific graceful-degradation errors (permission denied,
-// compositor rejection) are logged at INFO with a DE-shortcut hint — they
-// are expected on compositors without GlobalShortcuts support. Other errors
-// indicate a real misconfiguration and are logged at WARN.
+// exits. Other errors indicate a real misconfiguration and are logged at WARN.
 func (d *Daemon) runHotkey(ctx context.Context) {
 	if d.hotkey == nil {
 		return
@@ -384,12 +474,6 @@ func (d *Daemon) runHotkey(ctx context.Context) {
 		d.log.DebugContext(ctx, "voice: hotkey listener stopped")
 	case errors.Is(err, context.Canceled):
 		d.log.DebugContext(ctx, "voice: hotkey listener cancelled")
-	case errors.Is(err, hotkey.ErrPortalPermissionDenied),
-		errors.Is(err, hotkey.ErrPortalBindRejected),
-		errors.Is(err, hotkey.ErrPortalUnavailable):
-		d.log.InfoContext(ctx, "voice: portal hotkey not available — bind the shortcut via your DE settings",
-			slog.Any("reason", err),
-		)
 	default:
 		d.log.WarnContext(ctx, "voice: hotkey listener exited with error",
 			slog.Any("err", err),
@@ -422,6 +506,15 @@ func (d *Daemon) handleIPC(ctx context.Context, req ipc.Request) ipc.Response {
 		resp.OK = false
 		resp.ErrorCode = ipc.ErrCodeUnknownCommand
 		resp.Message = fmt.Sprintf("daemon does not know command %q", req.Command)
+
+		return resp
+	}
+
+	if event == domain.EventToggle && !d.acceptToggle() {
+		resp := ipc.NewResponseFor(req, string(state))
+		resp.OK = false
+		resp.ErrorCode = ipc.ErrCodeBusy
+		resp.Message = "toggle debounced: too frequent"
 
 		return resp
 	}
@@ -613,6 +706,15 @@ func (d *Daemon) advanceCycleSuccess(result domain.CycleResult) {
 		slog.String("provider", d.cfg.Provider),
 	)
 
+	if d.cfg.Privacy.LogTranscript && result.Text != "" {
+		// Emit the full transcript at DEBUG so it appears in dev logs without
+		// polluting INFO-level journal entries.
+		d.log.Debug("voice: transcript",
+			slog.String("model", d.cfg.GoWhisper.Model),
+			slog.String("text", result.Text),
+		)
+	}
+
 	// Bridge: if the recorder finished naturally at MaxDuration before
 	// either the daemon timer or a manual toggle moved the SM, we are
 	// still in domain.StateRecording. Drive the SM through domain.EventTimeout so
@@ -757,6 +859,23 @@ func (d *Daemon) bridgeOutOfRecording(reason string) {
 		slog.String("reason", reason),
 		slog.Any("err", applyErr),
 	)
+}
+
+// makeNotifyListener creates a domain.TransitionListener that fans each
+// successful transition out to sdListener (sd_notify) and to ch (optional
+// in-process consumers such as the tray). The channel send is non-blocking
+// — a lagging consumer causes drops, not stalls on the state machine.
+func makeNotifyListener(sdListener domain.TransitionListener, ch chan domain.State) domain.TransitionListener {
+	return func(state domain.State, action domain.Action) {
+		if sdListener != nil {
+			sdListener(state, action)
+		}
+
+		select {
+		case ch <- state:
+		default:
+		}
+	}
 }
 
 // Output construction (factory.BuildOutput, session-aware clipboard/autopaste factories,

@@ -9,7 +9,6 @@ import (
 
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
-	"github.com/partyzanex/a2text/pkg/hotkey"
 )
 
 // BuildHotkey is the public factory: it inspects cfg.Hotkey.Backend and
@@ -19,11 +18,8 @@ import (
 //
 // Backend selection:
 //
-//   - "" / "auto": portal on Wayland (if available), x11 on Xorg (if the
-//     binary was built with -tags=x11), otherwise none.
-//   - "portal": force xdg-desktop-portal GlobalShortcuts. Works on any
-//     session with a modern xdg-desktop-portal backend (GNOME 45+, KDE
-//     5.27+, wlroots with xdg-desktop-portal-wlr).
+//   - "" / "auto": x11 on Xorg (if the binary was built with -tags=x11),
+//     otherwise none. Wayland users should bind via DE shortcut.
 //   - "x11": force XGrabKey. Requires Xorg session + -tags=x11 build.
 //   - "none" / explicit disable: returns (nil, nil).
 //
@@ -31,8 +27,6 @@ import (
 //
 //   - explicit "x11" on a binary without the build tag → error (operator
 //     asked for the X11 backend, daemon must not silently fall back);
-//   - explicit "portal" when the portal interface is missing → error
-//     (same rationale: explicit asks must fail loudly);
 //   - "auto" never returns an error from backend choice — at worst it
 //     returns (nil, nil) and the user uses a DE shortcut.
 //
@@ -85,8 +79,6 @@ func buildHotkeyByBackend(
 	}
 
 	switch backend {
-	case config.VoiceHotkeyBackendPortal:
-		return buildPortalHotkey(cfg, log, handler)
 	case config.VoiceHotkeyBackendX11:
 		return buildX11Hotkey(cfg, log, handler)
 	case config.VoiceHotkeyBackendAuto:
@@ -98,7 +90,8 @@ func buildHotkeyByBackend(
 	return nil, fmt.Errorf("cmd: BuildHotkey: unknown backend %q", backend)
 }
 
-// buildAutoHotkey picks portal on Wayland, x11 on Xorg, none otherwise.
+// buildAutoHotkey picks x11 on Xorg, none otherwise. Wayland users should
+// bind the shortcut at the DE level — no built-in hotkey is available.
 // Each fallback is logged at INFO so the operator can see which backend
 // the daemon settled on in the journal.
 //
@@ -108,14 +101,7 @@ func buildAutoHotkey(cfg *config.VoiceConfig, log *slog.Logger, handler voice.Ha
 
 	switch sessionType {
 	case "wayland":
-		hk, err := buildPortalHotkey(cfg, log, handler)
-		if err == nil {
-			return hk, nil
-		}
-
-		log.Warn("voice: hotkey.backend=auto: portal init failed, no fallback for Wayland — use DE shortcut",
-			slog.Any("err", err),
-		)
+		log.Info("voice: hotkey.backend=auto: Wayland session — no built-in hotkey, use DE shortcut")
 
 		return nil, nil //nolint:nilnil
 
@@ -138,25 +124,4 @@ func buildAutoHotkey(cfg *config.VoiceConfig, log *slog.Logger, handler voice.Ha
 
 		return nil, nil //nolint:nilnil
 	}
-}
-
-// buildPortalHotkey constructs the portal-backed listener. Errors at this
-// stage are config issues (missing key); the actual D-Bus probe happens
-// inside Listen so a missing portal surfaces at daemon-startup log, not
-// here.
-//
-//nolint:ireturn // see BuildHotkey
-func buildPortalHotkey(cfg *config.VoiceConfig, log *slog.Logger, handler voice.Handler) (voice.HotkeyListener, error) {
-	listener, err := hotkey.NewPortalHotkey(handler, cfg.Hotkey.Key, cfg.Hotkey.Modifiers, log)
-	if err != nil {
-		return nil, fmt.Errorf("cmd: BuildHotkey: portal: %w", err)
-	}
-
-	log.Info("voice: hotkey backend=portal",
-		slog.String("key", cfg.Hotkey.Key),
-		slog.Any("modifiers", cfg.Hotkey.Modifiers),
-		slog.String("mode", string(cfg.Hotkey.Mode)),
-	)
-
-	return listener, nil
 }

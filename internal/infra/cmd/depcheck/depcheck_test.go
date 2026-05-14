@@ -203,7 +203,7 @@ func (s *DepCheckSuite) TestCheckMode_AutopasteDep_ExplicitWtype_NoFallback() {
 func (s *DepCheckSuite) TestCheckMode_AutopasteDep_UnsupportedCommand_FailsClosed() {
 	cfg := baseGoWhisperCfg()
 	cfg.Output.Mode = config.VoiceOutputModeClipboardAutopaste
-	cfg.Output.AutopasteCommand = "xdotool" // bypasses ValidateVoice in test
+	cfg.Output.AutopasteCommand = "banana" // bypasses ValidateVoice in test
 
 	allDeps, missing := depcheck.CheckMode(s.T().Context(), depcheck.ModeDaemon, cfg, testEnv(map[string]string{
 		"pw-record": "/usr/bin/pw-record",
@@ -212,7 +212,7 @@ func (s *DepCheckSuite) TestCheckMode_AutopasteDep_UnsupportedCommand_FailsClose
 	s.Require().Len(autoDeps, 1)
 	s.False(autoDeps[0].Optional, "unsupported command must be fatal, not optional")
 	s.Contains(autoDeps[0].InstallHint, "unsupported autopaste_command")
-	s.Contains(autoDeps[0].InstallHint, "xdotool")
+	s.Contains(autoDeps[0].InstallHint, "banana")
 
 	var foundFatal bool
 

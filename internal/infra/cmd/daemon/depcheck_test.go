@@ -218,7 +218,7 @@ func (s *DepCheckSuite) TestAutopasteDeps_ExplicitWtype_MissingButYdotoolPresent
 // --- unsupported autopaste_command surfaces as config error, not 'auto' ---
 
 func (s *DepCheckSuite) TestAutopasteDeps_UnsupportedCommand_FailsClosed() {
-	cfg := baseAutopasteCfg("xdotool")
+	cfg := baseAutopasteCfg("banana")
 
 	results, fatal := RunDepCheckWith(s.T().Context(), depcheck.ModeDaemon, cfg, s.lookup(nil), nil, nil)
 	autoResults := filterAutopasteDeps(results)
@@ -227,7 +227,7 @@ func (s *DepCheckSuite) TestAutopasteDeps_UnsupportedCommand_FailsClosed() {
 	s.False(autoResults[0].Optional,
 		"unsupported autopaste_command must be fatal — silently treating it as auto would mask the typo")
 	s.Contains(autoResults[0].InstallTip, "unsupported autopaste_command")
-	s.Contains(autoResults[0].InstallTip, "xdotool")
+	s.Contains(autoResults[0].InstallTip, "banana")
 	s.True(fatal)
 }
 

@@ -4,7 +4,7 @@ language: "ru"
 go_whisper:
   url: "http://localhost:9081"
   prefix: "/api/whisper"
-  model: "ggml-small"
+  model: "ggml-large-v3-turbo"
   timeout: "10m"
   auto_download: true
 
@@ -36,7 +36,7 @@ daemon:
 
 hotkey:
   enabled: true
-  key: "Q"
+  key: "R"
   modifiers: ["super"]
   backend: "auto"
   mode: "toggle"

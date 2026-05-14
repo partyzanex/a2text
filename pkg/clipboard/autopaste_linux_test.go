@@ -63,6 +63,7 @@ func (s *WaylandAutopasterSuite) TestNew_Auto_NoCandidates_ReturnsErrNoBackend()
 	runner := NewMockPasteRunner(s.ctrl)
 	runner.EXPECT().LookPath("wtype").Return("", errors.New("not found"))
 	runner.EXPECT().LookPath("ydotool").Return("", errors.New("not found"))
+	runner.EXPECT().LookPath("xdotool").Return("", errors.New("not found"))
 
 	a, err := newWaylandAutopaster(runner, "auto", s.log)
 
@@ -97,7 +98,7 @@ func (s *WaylandAutopasterSuite) TestNew_ExplicitBackend_Missing_ReturnsErrNoBac
 func (s *WaylandAutopasterSuite) TestNew_UnsupportedBackend_RejectedBeforePathLookup() {
 	runner := NewMockPasteRunner(s.ctrl)
 
-	paster, err := newWaylandAutopaster(runner, "xdotool", s.log)
+	paster, err := newWaylandAutopaster(runner, "banana", s.log)
 
 	s.Require().Error(err)
 	s.Require().ErrorIs(err, ErrUnsupportedAutopasteBackend,
@@ -105,6 +106,26 @@ func (s *WaylandAutopasterSuite) TestNew_UnsupportedBackend_RejectedBeforePathLo
 			"depcheck/install hints would be misleading otherwise")
 	s.Require().NotErrorIs(err, ErrNoAutopasteBackend)
 	s.Nil(paster)
+}
+
+func (s *WaylandAutopasterSuite) TestNew_ExplicitXdotool_Found() {
+	runner := NewMockPasteRunner(s.ctrl)
+	runner.EXPECT().LookPath("xdotool").Return("/usr/bin/xdotool", nil)
+
+	paster, err := newWaylandAutopaster(runner, "xdotool", s.log)
+	s.Require().NoError(err)
+	s.Equal("xdotool", paster.Backend())
+}
+
+func (s *WaylandAutopasterSuite) TestNew_Auto_FallsBackToXdotool() {
+	runner := NewMockPasteRunner(s.ctrl)
+	runner.EXPECT().LookPath("wtype").Return("", errors.New("not found"))
+	runner.EXPECT().LookPath("ydotool").Return("", errors.New("not found"))
+	runner.EXPECT().LookPath("xdotool").Return("/usr/bin/xdotool", nil)
+
+	paster, err := newWaylandAutopaster(runner, "auto", s.log)
+	s.Require().NoError(err)
+	s.Equal("xdotool", paster.Backend())
 }
 
 func (s *WaylandAutopasterSuite) TestNew_ExplicitWtype_MissingButYdotoolPresent_NoFallback() {

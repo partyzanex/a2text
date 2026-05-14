@@ -156,11 +156,6 @@ const (
 	// binary has the `x11` build tag), otherwise none.
 	VoiceHotkeyBackendAuto VoiceHotkeyBackend = "auto"
 
-	// VoiceHotkeyBackendPortal uses xdg-desktop-portal GlobalShortcuts.
-	// Requires GNOME 45+/KDE 5.27+/wlroots+xdg-desktop-portal-wlr.
-	// Sees both press and release — enables hold-mode on Wayland.
-	VoiceHotkeyBackendPortal VoiceHotkeyBackend = "portal"
-
 	// VoiceHotkeyBackendX11 uses XGrabKey directly. Requires Xorg session
 	// and a binary built with -tags=x11.
 	VoiceHotkeyBackendX11 VoiceHotkeyBackend = "x11"
@@ -251,6 +246,7 @@ const (
 	VoiceAutopasteCommandAuto    = "auto"
 	VoiceAutopasteCommandWtype   = "wtype"
 	VoiceAutopasteCommandYdotool = "ydotool"
+	VoiceAutopasteCommandXdotool = "xdotool"
 )
 
 // VoiceLogLevel* constants enumerate canonical slog level names. Centralised
@@ -281,7 +277,8 @@ type VoicePrivacyConfig struct {
 //
 // Discovery order:
 //   - explicit path, if non-empty (no local overlay applied);
-//   - otherwise ./config.yaml or ./app/config.yaml,
+//   - $XDG_CONFIG_HOME/a2text/config.yaml (or ~/.config/a2text/config.yaml);
+//   - ./config.yaml or ./app/config.yaml (development fallback),
 //     then optional ./config.local.yaml (or ./app/config.local.yaml) overlay.
 //
 // Env vars use the A2TEXT_ prefix and underscore-flattened key paths,
@@ -402,6 +399,14 @@ func readVoiceConfig(viperInst *viper.Viper, path string) error {
 
 	viperInst.SetConfigName("config")
 	viperInst.SetConfigType("yaml")
+
+	// User config dir (~/.config/a2text/) has the highest priority so that
+	// the installed binary always reads the user's config, not whatever
+	// ./app/config.yaml happens to be present in the working directory.
+	if xdgDir, err := os.UserConfigDir(); err == nil {
+		viperInst.AddConfigPath(filepath.Join(xdgDir, "a2text"))
+	}
+
 	viperInst.AddConfigPath(".")
 	viperInst.AddConfigPath("./app")
 
@@ -659,12 +664,12 @@ func validateVoiceOutput(cfg *VoiceConfig) error {
 	}
 
 	switch cfg.Output.AutopasteCommand {
-	case VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool:
+	case VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool, VoiceAutopasteCommandXdotool:
 	default:
 		return fmt.Errorf(
-			"unknown autopaste_command %q (supported: %s, %s, %s)",
+			"unknown autopaste_command %q (supported: %s, %s, %s, %s)",
 			cfg.Output.AutopasteCommand,
-			VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool,
+			VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool, VoiceAutopasteCommandXdotool,
 		)
 	}
 

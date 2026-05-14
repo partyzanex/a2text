@@ -408,6 +408,14 @@ func autopasteDeps(cfg *config.VoiceConfig) []Dependency {
 				" (also ensure ydotoold is running and /dev/uinput is writable)",
 		)}
 
+	case config.VoiceAutopasteCommandXdotool:
+		return []Dependency{probeBinaryDep(
+			GroupAutopaste,
+			config.VoiceAutopasteCommandXdotool,
+			"X11/XWayland key injection (autopaste)",
+			"Debian/Ubuntu: apt install xdotool; Fedora: dnf install xdotool; Arch: pacman -S xdotool",
+		)}
+
 	case "", config.VoiceAutopasteCommandAuto:
 		return []Dependency{autoAutopasteDep()}
 
@@ -420,16 +428,19 @@ func autopasteDeps(cfg *config.VoiceConfig) []Dependency {
 // which probes for wtype or ydotool.
 func autoAutopasteDep() Dependency {
 	return Dependency{
-		Name:  config.VoiceAutopasteCommandWtype + "/" + config.VoiceAutopasteCommandYdotool,
+		Name: config.VoiceAutopasteCommandWtype + "/" +
+			config.VoiceAutopasteCommandYdotool + "/" +
+			config.VoiceAutopasteCommandXdotool,
 		Group: GroupAutopaste,
-		InstallHint: "install wtype (preferred) OR ydotool, otherwise autopaste degrades to clipboard-only; " +
+		InstallHint: "install wtype OR ydotool OR xdotool for autopaste; " +
 			"Debian/Ubuntu: apt install wtype; Fedora: dnf install wtype; Arch: pacman -S wtype",
-		RequiredFor: "Wayland key injection (autopaste)",
+		RequiredFor: "key injection (autopaste)",
 		Optional:    true,
 		Check: func(_ context.Context, env Env) CheckResult {
 			for _, name := range []string{
 				config.VoiceAutopasteCommandWtype,
 				config.VoiceAutopasteCommandYdotool,
+				config.VoiceAutopasteCommandXdotool,
 			} {
 				if _, err := env.LookPath(name); err == nil {
 					return CheckResult{Found: true, Detail: name}
@@ -448,11 +459,12 @@ func unknownAutopasteDep(cmd string) Dependency {
 		Name:  "autopaste_command",
 		Group: GroupAutopaste,
 		InstallHint: fmt.Sprintf(
-			"unsupported autopaste_command %q; use %q, %q or %q",
+			"unsupported autopaste_command %q; use %q, %q, %q or %q",
 			sanitizeLabel(cmd),
 			config.VoiceAutopasteCommandAuto,
 			config.VoiceAutopasteCommandWtype,
 			config.VoiceAutopasteCommandYdotool,
+			config.VoiceAutopasteCommandXdotool,
 		),
 		RequiredFor: "autopaste backend selection",
 		Check:       func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
@@ -463,14 +475,9 @@ func unknownAutopasteDep(cmd string) Dependency {
 // Honors cfg.Hotkey.Backend:
 //
 //   - disabled / "none": no deps (DE shortcut path, nothing to check).
-//   - "portal": probe org.freedesktop.portal.GlobalShortcuts on the session
-//     bus. Required when explicitly chosen — missing portal must fail loudly.
 //   - "x11": no depcheck-level probe; the XGrabKey error surfaces at Listen.
-//   - "" / "auto": probe portal as optional. Failure here is just informational
-//     because auto-mode falls back to "no built-in hotkey, use DE shortcut".
-//
-// Probe-side IsPortalAvailable opens a fresh D-Bus connection and closes it
-// before returning, so depcheck never holds a live bus connection.
+//   - "" / "auto": no depcheck needed — auto picks x11 on Xorg or none; no
+//     built-in hotkey on Wayland (use DE shortcut).
 func hotkeyDeps(cfg *config.VoiceConfig) []Dependency {
 	if cfg == nil || !cfg.Hotkey.Enabled {
 		return nil
@@ -482,17 +489,8 @@ func hotkeyDeps(cfg *config.VoiceConfig) []Dependency {
 	}
 
 	switch backend {
-	case config.VoiceHotkeyBackendNone:
+	case config.VoiceHotkeyBackendNone, config.VoiceHotkeyBackendAuto:
 		return nil
-
-	case config.VoiceHotkeyBackendPortal:
-		return []Dependency{portalDep(false)}
-
-	case config.VoiceHotkeyBackendAuto:
-		// On auto the daemon falls back gracefully, so the probe is optional.
-		// It still emits an INFO/WARN line so the operator sees which path
-		// the daemon will take before the listener even runs.
-		return []Dependency{portalDep(true)}
 
 	case config.VoiceHotkeyBackendX11:
 		// X11 doesn't have a useful pre-Listen probe: XGrabKey may fail on
@@ -505,36 +503,9 @@ func hotkeyDeps(cfg *config.VoiceConfig) []Dependency {
 			Name:        "backend",
 			Group:       GroupHotkey,
 			RequiredFor: "hotkey backend selection",
-			InstallHint: fmt.Sprintf("unknown hotkey.backend %q (allowed: auto, portal, x11, none)", string(backend)),
+			InstallHint: fmt.Sprintf("unknown hotkey.backend %q (allowed: auto, x11, none)", string(backend)),
 			Check:       func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
 		}}
-	}
-}
-
-// portalDep emits a Dependency that probes the GlobalShortcuts D-Bus
-// interface. When optional=true the daemon will still start without it
-// (auto-mode); when false (explicit portal backend) a missing portal
-// fails depcheck.
-func portalDep(optional bool) Dependency {
-	return Dependency{
-		Name:        "portal_global_shortcuts",
-		Group:       GroupHotkey,
-		Optional:    optional,
-		RequiredFor: "global hotkey via xdg-desktop-portal",
-		InstallHint: "Debian/Ubuntu: apt install xdg-desktop-portal-gnome (GNOME) " +
-			"or xdg-desktop-portal-kde (KDE) or xdg-desktop-portal-wlr (wlroots); " +
-			"requires GNOME 45+, KDE 5.27+, or wlroots compositor with portal support",
-		Check: func(_ context.Context, env Env) CheckResult {
-			if env.PortalAvailable == nil {
-				return CheckResult{}
-			}
-
-			if !env.PortalAvailable() {
-				return CheckResult{}
-			}
-
-			return CheckResult{Found: true, Detail: "org.freedesktop.portal.GlobalShortcuts"}
-		},
 	}
 }
 

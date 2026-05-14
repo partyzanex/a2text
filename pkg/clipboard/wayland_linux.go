@@ -5,6 +5,7 @@ package clipboard
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -39,6 +40,11 @@ func (execCopyRunner) Run(
 
 	// Safe: binary is validated above to be exactly wl-copy, args are caller-controlled and safe.
 	cmd := exec.CommandContext(deadlineCtx, name, args...) //nolint:gosec // binary allowlisted
+	// WaitDelay caps how long cmd.Wait blocks for I/O goroutines after the
+	// process exits.  wl-copy often forks a daemon child that inherits the
+	// stderr pipe; without this guard the stderr-drain goroutine blocks
+	// until the child exits (could be minutes), holding up the cycle.
+	cmd.WaitDelay = copyWaitDelay
 	cmd.Stdin = bytes.NewReader(stdin)
 
 	var stderr bytes.Buffer
@@ -48,6 +54,15 @@ func (execCopyRunner) Run(
 	if err := cmd.Run(); err != nil {
 		if deadlineCtx.Err() != nil {
 			return fmt.Errorf("%s timeout after %s: %w", name, timeout, deadlineCtx.Err())
+		}
+
+		// wl-copy forks a background daemon child that inherits the stderr
+		// pipe write-end. When the parent exits with code 0, Go's WaitDelay
+		// fires (the child keeps the pipe open), making cmd.Run() return
+		// exec.ErrWaitDelay. The text is already in the clipboard at this
+		// point — trust the exit code, not the I/O-drain result.
+		if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+			return nil
 		}
 
 		tail := strings.TrimSpace(stderr.String())
@@ -84,8 +99,17 @@ type WaylandClipboard struct {
 }
 
 const (
-	wlCopyBin   = "wl-copy"
-	copyTimeout = 3 * time.Second // fail-hard on timeout (wrapped ctx.Err)
+	wlCopyBin = "wl-copy"
+	// copyTimeout caps the total wall time for one wl-copy invocation.
+	// wl-copy either exits quickly (forks daemon child) or stays alive as
+	// the clipboard owner (foreground mode). Either way 3 s is generous.
+	copyTimeout = 3 * time.Second
+	// copyWaitDelay bounds how long cmd.Wait blocks for I/O goroutines
+	// after the process exits. wl-copy often forks a daemon child that
+	// inherits the stderr pipe, so the stderr-drain goroutine can block
+	// indefinitely without this guard.  500 ms is enough to capture any
+	// stderr that the parent emits before forking.
+	copyWaitDelay = 500 * time.Millisecond
 )
 
 // NewWaylandClipboard binds to the wl-copy binary in PATH.

@@ -17,11 +17,15 @@ import (
 const maxAutoPasteStderrLen = 200
 
 // Supported autopaste backends. autopasteBackendAuto selects the first
-// available binary at construction time (wtype > ydotool).
+// available binary at construction time (wtype > ydotool > xdotool).
 const (
 	autopasteBackendAuto    = "auto"
 	autopasteBackendWtype   = "wtype"
 	autopasteBackendYdotool = "ydotool"
+	// autopasteBackendXdotool is a fallback for X11/XWayland sessions (and
+	// Wayland sessions with an XWayland server). It sends Ctrl+V to the
+	// currently focused X11 window via DISPLAY=:0.
+	autopasteBackendXdotool = "xdotool"
 )
 
 // WaylandAutopaster sends a Ctrl+V keystroke via wtype or ydotool to the
@@ -59,7 +63,7 @@ func (execPasteRunner) Run(
 
 	// Allowlist permitted autopaste binaries to prevent command injection.
 	bin := filepath.Base(name)
-	if bin != autopasteBackendWtype && bin != autopasteBackendYdotool {
+	if bin != autopasteBackendWtype && bin != autopasteBackendYdotool && bin != autopasteBackendXdotool {
 		return fmt.Errorf("autopaste: command not allowed: %s", bin)
 	}
 
@@ -162,7 +166,7 @@ func resolveAutopasteBackend(runner PasteRunner, backendName string) (backend, p
 	}
 
 	if backendName == autopasteBackendAuto {
-		for _, candidate := range []string{autopasteBackendWtype, autopasteBackendYdotool} {
+		for _, candidate := range []string{autopasteBackendWtype, autopasteBackendYdotool, autopasteBackendXdotool} {
 			if candidatePath, lookErr := runner.LookPath(candidate); lookErr == nil {
 				return candidate, candidatePath, nil
 			}
@@ -173,7 +177,9 @@ func resolveAutopasteBackend(runner PasteRunner, backendName string) (backend, p
 
 	// Explicit backend request — only the known names are valid. This is a
 	// config error, not a missing dependency, so a distinct sentinel.
-	if backendName != autopasteBackendWtype && backendName != autopasteBackendYdotool {
+	switch backendName {
+	case autopasteBackendWtype, autopasteBackendYdotool, autopasteBackendXdotool:
+	default:
 		return "", "", fmt.Errorf("%w: %q", ErrUnsupportedAutopasteBackend, backendName)
 	}
 
@@ -255,6 +261,11 @@ func pasteArgs(backend string) ([]string, error) {
 		return []string{"-M", wtypeCtrlModifier, "v", "-m", wtypeCtrlModifier}, nil
 	case autopasteBackendYdotool:
 		return []string{ydotoolKeyCmd, "29:1", "47:1", "47:0", "29:0"}, nil
+	case autopasteBackendXdotool:
+		// --clearmodifiers releases any held modifier keys (e.g. Super from
+		// the hotkey) before sending Ctrl+V, preventing "Super+Ctrl+V" being
+		// delivered to the window.
+		return []string{"key", "--clearmodifiers", "ctrl+v"}, nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedAutopasteBackend, backend)
 	}

@@ -14,8 +14,10 @@ import (
 	"github.com/partyzanex/a2text/internal/adapters/ipc"
 	"github.com/partyzanex/a2text/internal/domain"
 	"github.com/partyzanex/a2text/internal/infra/cmd/factory"
+	"github.com/partyzanex/a2text/internal/infra/cmd/setup"
 	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/tray"
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
@@ -118,37 +120,7 @@ func acquireLockAndServe(
 		}
 	}()
 
-	cancelToggle := startInitialToggle(ctx, log, client)
-	defer cancelToggle()
-
 	return runDaemon(ctx, cfg, log, socketPath)
-}
-
-// startInitialToggle launches a background goroutine that waits for the
-// daemon socket to come online and sends the initial Toggle.
-// Returns a cancel function that the caller MUST defer after runDaemon
-// returns to prevent the goroutine from toggling a different daemon.
-func startInitialToggle(ctx context.Context, log *slog.Logger, client *ipc.Client) context.CancelFunc {
-	toggleCtx, cancelToggle := context.WithCancel(ctx)
-
-	go func() {
-		defer cancelToggle()
-
-		resp, toggleErr := waitAndToggle(toggleCtx, client)
-		if toggleErr != nil {
-			if !errors.Is(toggleErr, context.Canceled) {
-				log.Warn("voice: self-bootstrap initial toggle failed",
-					slog.Any("err", toggleErr),
-				)
-			}
-
-			return
-		}
-
-		logToggleResult(ctx, log, &resp)
-	}()
-
-	return cancelToggle
 }
 
 // tryToggle issues one Toggle. The single round-trip serves both as
@@ -303,7 +275,32 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 	signalCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	registerHotkey(signalCtx, cfg, log)
+
+	trayInst := tray.New(log, func() { daemon.Toggle(signalCtx) }, stop)
+	daemon.AttachTray(trayInst)
+
 	return daemon.Serve(signalCtx, socketPath)
+}
+
+// registerHotkey attempts to register the global keyboard shortcut in the
+// current desktop environment using the key/modifiers from cfg. Failures are
+// logged at WARN and never propagate — a missing or broken hotkey must not
+// prevent the daemon from starting. Non-GNOME sessions and headless
+// environments are silently skipped.
+func registerHotkey(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) {
+	if cfg.Hotkey.Key == "" {
+		return
+	}
+
+	if err := setup.RunSetup(ctx, cfg, log); err != nil {
+		if !errors.Is(err, setup.ErrDesktopUnsupported) {
+			log.Warn("voice: hotkey auto-register failed",
+				slog.String("key", cfg.Hotkey.Key),
+				slog.Any("err", err),
+			)
+		}
+	}
 }
 
 // buildDaemon constructs the Daemon and returns it along with the
