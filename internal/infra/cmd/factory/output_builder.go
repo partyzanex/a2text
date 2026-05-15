@@ -72,9 +72,22 @@ func buildSessionClipboard(log *slog.Logger) (SessionClipboard, error) {
 // autopaste backend. Wayland is never mixed with X11 to avoid injecting
 // keystrokes into the wrong surface.
 //
+// The "uinput" backend is session-agnostic (talks to /dev/uinput, the
+// compositor routes events) and is therefore checked before the Wayland/X11
+// split.
+//
 // factory: session detection selects Wayland or X11 concrete type at runtime;
 // SessionAutopaster is the only stable contract.
 func buildSessionAutopaster(cmd string, log *slog.Logger) (SessionAutopaster, error) {
+	if cmd == clipboard.AutopasteBackendUinput {
+		ua, err := clipboard.NewUinputAutopaster(log)
+		if err != nil {
+			return nil, fmt.Errorf("output builder: %w", err)
+		}
+
+		return ua, nil
+	}
+
 	if clipboard.DetectWayland() {
 		return buildWaylandAutopaster(cmd, log)
 	}

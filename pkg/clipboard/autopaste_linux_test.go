@@ -190,7 +190,7 @@ func (s *WaylandAutopasterSuite) TestPaste_Ydotool_SendsKeycodes() {
 	runner := NewMockPasteRunner(s.ctrl)
 	runner.EXPECT().LookPath("ydotool").Return("/usr/bin/ydotool", nil)
 	runner.EXPECT().
-		Run(gomock.Any(), "/usr/bin/ydotool", []string{"key", "29:1", "47:1", "47:0", "29:0"}, pasteTimeout).
+		Run(gomock.Any(), "/usr/bin/ydotool", []string{"key", "--delay", "300", "ctrl+v"}, pasteTimeout).
 		Return(nil)
 	a := s.autopaster(runner, "ydotool")
 

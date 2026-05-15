@@ -246,15 +246,20 @@ const wtypeCtrlModifier = "ctrl"
 // ydotoolKeyCmd is the ydotool subcommand for sending key events.
 const ydotoolKeyCmd = "key"
 
+// ydotoolDelay is the --delay passed to ydotool. Without ydotoold, ydotool
+// creates a fresh uinput device on each call; the compositor needs ~30ms to
+// register it via udev/libinput. 300ms gives comfortable margin.
+const ydotoolDelay = "300"
+
 // pasteArgs returns the per-backend argument vector to simulate Ctrl+V.
 //
 //   - wtype: "-M ctrl v -m ctrl" — press LeftCtrl, type 'v', release LeftCtrl.
 //     wtype interprets a single character argument as a key to type while
 //     the modifier set by -M is active.
 //
-//   - ydotool: "key 29:1 47:1 47:0 29:0" — raw Linux input event codes.
-//     29 = KEY_LEFTCTRL, 47 = KEY_V; trailing :1 is "down", :0 is "up".
-//     Documented in linux/input-event-codes.h; ydotool key reference confirms.
+//   - ydotool: "key --delay 300 ctrl+v" — named key syntax (v0.1.8+).
+//     --delay gives the compositor time to register the new uinput device
+//     before events arrive.
 //
 // The default branch returns ErrUnsupportedAutopasteBackend instead of
 // silently producing empty args. A hand-built `&WaylandAutopaster{backend:
@@ -265,12 +270,12 @@ func pasteArgs(backend string) ([]string, error) {
 	case autopasteBackendWtype:
 		return []string{"-M", wtypeCtrlModifier, "v", "-m", wtypeCtrlModifier}, nil
 	case autopasteBackendYdotool:
-		return []string{ydotoolKeyCmd, "29:1", "47:1", "47:0", "29:0"}, nil
+		return []string{ydotoolKeyCmd, "--delay", ydotoolDelay, xdotoolCtrlV}, nil
 	case autopasteBackendXdotool:
 		// --clearmodifiers releases any held modifier keys (e.g. Super from
 		// the hotkey) before sending Ctrl+V, preventing "Super+Ctrl+V" being
 		// delivered to the window.
-		return []string{"key", "--clearmodifiers", "ctrl+v"}, nil
+		return []string{"key", "--clearmodifiers", xdotoolCtrlV}, nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedAutopasteBackend, backend)
 	}

@@ -416,11 +416,28 @@ func autopasteDeps(cfg *config.VoiceConfig) []Dependency {
 			"Debian/Ubuntu: apt install xdotool; Fedora: dnf install xdotool; Arch: pacman -S xdotool",
 		)}
 
+	case config.VoiceAutopasteCommandUinput:
+		return []Dependency{uinputAutopasteDep()}
+
 	case "", config.VoiceAutopasteCommandAuto:
 		return []Dependency{autoAutopasteDep()}
 
 	default:
 		return []Dependency{unknownAutopasteDep(cmd)}
+	}
+}
+
+// uinputAutopasteDep returns a dependency for the persistent Go uinput backend.
+// No binary is required; /dev/uinput access is the only prerequisite.
+func uinputAutopasteDep() Dependency {
+	return Dependency{
+		Name:        config.VoiceAutopasteCommandUinput,
+		Group:       GroupAutopaste,
+		RequiredFor: "Wayland/X11 key injection via persistent uinput virtual keyboard",
+		InstallHint: "ensure /dev/uinput is writable: sudo setfacl -m u:$USER:rw /dev/uinput",
+		Check: func(_ context.Context, _ Env) CheckResult {
+			return CheckResult{Found: true, Detail: "Go uinput (no binary required)"}
+		},
 	}
 }
 
@@ -459,12 +476,13 @@ func unknownAutopasteDep(cmd string) Dependency {
 		Name:  "autopaste_command",
 		Group: GroupAutopaste,
 		InstallHint: fmt.Sprintf(
-			"unsupported autopaste_command %q; use %q, %q, %q or %q",
+			"unsupported autopaste_command %q; use %q, %q, %q, %q or %q",
 			sanitizeLabel(cmd),
 			config.VoiceAutopasteCommandAuto,
 			config.VoiceAutopasteCommandWtype,
 			config.VoiceAutopasteCommandYdotool,
 			config.VoiceAutopasteCommandXdotool,
+			config.VoiceAutopasteCommandUinput,
 		),
 		RequiredFor: "autopaste backend selection",
 		Check:       func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
@@ -498,14 +516,50 @@ func hotkeyDeps(cfg *config.VoiceConfig) []Dependency {
 		// the platform check. Surface a config-presence dep instead.
 		return []Dependency{x11HotkeyDep()}
 
+	case config.VoiceHotkeyBackendEvdev:
+		return []Dependency{evdevHotkeyDep()}
+
 	default:
 		return []Dependency{{
 			Name:        "backend",
 			Group:       GroupHotkey,
 			RequiredFor: "hotkey backend selection",
-			InstallHint: fmt.Sprintf("unknown hotkey.backend %q (allowed: auto, x11, none)", string(backend)),
-			Check:       func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
+			InstallHint: fmt.Sprintf(
+				"unknown hotkey.backend %q (allowed: auto, x11, evdev, none)", string(backend),
+			),
+			Check: func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
 		}}
+	}
+}
+
+// evdevHotkeyDep probes /dev/input for at least one readable event device.
+// The backend itself iterates all event nodes and skips unreadable ones, so
+// the probe answers "does the daemon have ANY access at all?" — usually a
+// proxy for "is the user in the input group?".
+func evdevHotkeyDep() Dependency {
+	return Dependency{
+		Name:        "evdev",
+		Group:       GroupHotkey,
+		RequiredFor: "Linux raw key events (hotkey backend=evdev)",
+		InstallHint: "ensure the user is in the 'input' group: sudo usermod -aG input $USER && relogin; " +
+			"or set ACLs on /dev/input/event*",
+		Check: func(_ context.Context, _ Env) CheckResult {
+			matches, err := filepath.Glob("/dev/input/event*")
+			if err != nil || len(matches) == 0 {
+				return CheckResult{Detail: "no /dev/input/event* devices"}
+			}
+
+			for _, path := range matches {
+				file, openErr := os.Open(path) //nolint:gosec // kernel-managed device node
+				if openErr == nil {
+					_ = file.Close() //nolint:errcheck // probe — open success is all we needed
+
+					return CheckResult{Found: true, Detail: path}
+				}
+			}
+
+			return CheckResult{Detail: "no readable /dev/input/event* device"}
+		},
 	}
 }
 

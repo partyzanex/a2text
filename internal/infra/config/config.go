@@ -160,6 +160,12 @@ const (
 	// and a binary built with -tags=x11.
 	VoiceHotkeyBackendX11 VoiceHotkeyBackend = "x11"
 
+	// VoiceHotkeyBackendEvdev reads raw key events from /dev/input/event*.
+	// Linux-only, works under any session (Wayland, X11, console). Sees both
+	// Press and Release so hold-mode binds work correctly. Requires read
+	// access to /dev/input/event* — usually membership in the "input" group.
+	VoiceHotkeyBackendEvdev VoiceHotkeyBackend = "evdev"
+
 	// VoiceHotkeyBackendNone disables the built-in listener entirely;
 	// the user is expected to bind via DE shortcut (GNOME/KDE/i3 config).
 	VoiceHotkeyBackendNone VoiceHotkeyBackend = "none"
@@ -247,6 +253,13 @@ const (
 	VoiceAutopasteCommandWtype   = "wtype"
 	VoiceAutopasteCommandYdotool = "ydotool"
 	VoiceAutopasteCommandXdotool = "xdotool"
+
+	// VoiceAutopasteCommandUinput uses a persistent Go uinput virtual keyboard.
+	// The device is created at daemon startup and kept alive until shutdown so the
+	// compositor registers it once and routes all subsequent key events without any
+	// per-paste device lifecycle overhead. Works for native Wayland apps on Linux.
+	// Requires write access to /dev/uinput (ACL or "input" group).
+	VoiceAutopasteCommandUinput = "uinput"
 )
 
 // VoiceLogLevel* constants enumerate canonical slog level names. Centralised
@@ -664,12 +677,14 @@ func validateVoiceOutput(cfg *VoiceConfig) error {
 	}
 
 	switch cfg.Output.AutopasteCommand {
-	case VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool, VoiceAutopasteCommandXdotool:
+	case VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool,
+		VoiceAutopasteCommandXdotool, VoiceAutopasteCommandUinput:
 	default:
 		return fmt.Errorf(
-			"unknown autopaste_command %q (supported: %s, %s, %s, %s)",
+			"unknown autopaste_command %q (supported: %s, %s, %s, %s, %s)",
 			cfg.Output.AutopasteCommand,
-			VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool, VoiceAutopasteCommandXdotool,
+			VoiceAutopasteCommandAuto, VoiceAutopasteCommandWtype, VoiceAutopasteCommandYdotool,
+			VoiceAutopasteCommandXdotool, VoiceAutopasteCommandUinput,
 		)
 	}
 

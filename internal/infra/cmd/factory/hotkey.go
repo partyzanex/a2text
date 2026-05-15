@@ -21,6 +21,9 @@ import (
 //   - "" / "auto": x11 on Xorg (if the binary was built with -tags=x11),
 //     otherwise none. Wayland users should bind via DE shortcut.
 //   - "x11": force XGrabKey. Requires Xorg session + -tags=x11 build.
+//   - "evdev": read raw key events from /dev/input/event* (Linux only).
+//     Sees Press AND Release, works under any session. Requires read
+//     access to the device nodes (usually the "input" group).
 //   - "none" / explicit disable: returns (nil, nil).
 //
 // Errors:
@@ -81,6 +84,8 @@ func buildHotkeyByBackend(
 	switch backend {
 	case config.VoiceHotkeyBackendX11:
 		return buildX11Hotkey(cfg, log, handler)
+	case config.VoiceHotkeyBackendEvdev:
+		return buildEvdevHotkey(cfg, log, handler)
 	case config.VoiceHotkeyBackendAuto:
 		return buildAutoHotkey(cfg, log, handler)
 	case config.VoiceHotkeyBackendNone:
