@@ -32,7 +32,7 @@ func TestExampleConfig_ParsesAndValidates(t *testing.T) {
 
 	require.Equal(t, "http://localhost:9081", cfg.GoWhisper.URL)
 	require.Equal(t, "/api/whisper", cfg.GoWhisper.Prefix)
-	require.Equal(t, "ggml-small", cfg.GoWhisper.Model)
+	require.Equal(t, "ggml-large-v3-turbo", cfg.GoWhisper.Model)
 	require.Positive(t, cfg.GoWhisper.Timeout)
 	require.True(t, cfg.GoWhisper.AutoDownload)
 

@@ -17,6 +17,7 @@ import (
 	"github.com/partyzanex/a2text/internal/infra/cmd/setup"
 	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/settings"
 	"github.com/partyzanex/a2text/internal/infra/tray"
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
@@ -276,9 +277,7 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 	defer stop()
 
 	registerHotkey(signalCtx, cfg, log)
-
-	trayInst := tray.New(log, func() { daemon.Toggle(signalCtx) }, stop)
-	daemon.AttachTray(trayInst)
+	attachTray(signalCtx, cfg, log, daemon, stop)
 
 	return daemon.Serve(signalCtx, socketPath)
 }
@@ -301,6 +300,18 @@ func registerHotkey(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logg
 			)
 		}
 	}
+}
+
+// attachTray wires the settings window and system-tray icon to the daemon.
+func attachTray(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, daemon *Daemon, stop func()) {
+	settingsWin := settings.New(cfg, log)
+	trayInst := tray.New(log,
+		func() { daemon.Toggle(ctx) },
+		func() { settingsWin.Show() },
+		stop,
+	)
+	daemon.AttachTray(trayInst)
+	daemon.AttachSettings(settingsWin)
 }
 
 // buildDaemon constructs the Daemon and returns it along with the

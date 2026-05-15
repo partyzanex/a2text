@@ -223,6 +223,7 @@ func runDaemonMode(ctx context.Context, cfg *config.VoiceConfig, logger *slog.Lo
 	logger.Info("a2text starting in daemon mode",
 		slog.String("provider", cfg.Provider),
 		slog.String("language", cfg.Language),
+		slog.String("log_level", cfg.LogLevel),
 	)
 
 	if err := daemon.RunDaemonOnly(ctx, cfg, logger, daemon.StdoutWriter()); err != nil {
@@ -236,6 +237,7 @@ func runBootstrapMode(ctx context.Context, cfg *config.VoiceConfig, logger *slog
 	logger.Info("a2text starting in daemon-or-toggle mode",
 		slog.String("provider", cfg.Provider),
 		slog.String("language", cfg.Language),
+		slog.String("log_level", cfg.LogLevel),
 	)
 
 	if err := daemon.RunBootstrap(ctx, cfg, logger, daemon.StdoutWriter()); err != nil {

@@ -63,6 +63,11 @@ type Daemon struct {
 	// Serve and exits when ctx is cancelled. Wired by callers via AttachTray.
 	tray *tray.Tray
 
+	// settingsWin is an optional Fyne-based settings window. When non-nil,
+	// Serve calls settingsWin.Run() on the main goroutine (Fyne requires it)
+	// and settingsWin.Stop() during shutdown. Wired via AttachSettings.
+	settingsWin fyneRunner
+
 	// notifyCh carries state-machine transitions to any interested in-process
 	// consumer (currently the tray). Sends are non-blocking — a lagging
 	// consumer causes drops, not stalls.
@@ -101,6 +106,14 @@ type Daemon struct {
 // importing the whole stt package here.
 type transcribeCloser interface {
 	Close() error
+}
+
+// fyneRunner abstracts the Fyne settings window so daemon.go does not import
+// the settings package directly. Run() blocks on the Fyne event loop (must be
+// called from the main goroutine). Stop() quits the event loop.
+type fyneRunner interface {
+	Run()
+	Stop()
 }
 
 // DaemonDeps groups everything NewDaemon needs from the wiring layer.
@@ -174,6 +187,13 @@ func (d *Daemon) AttachHotkey(hk voice.HotkeyListener) {
 func (d *Daemon) AttachTray(tr *tray.Tray) {
 	d.tray = tr
 	tr.SetInputCh(d.notifyCh)
+}
+
+// AttachSettings wires the Fyne settings window. Serve() calls win.Run() on
+// the main goroutine and win.Stop() during shutdown. Must be called before
+// Serve().
+func (d *Daemon) AttachSettings(win fyneRunner) {
+	d.settingsWin = win
 }
 
 // Toggle advances the state machine by EventToggle and dispatches the
@@ -340,19 +360,46 @@ func (d *Daemon) Serve(ctx context.Context, socketPath string) error {
 		go d.tray.Run(ctx)
 	}
 
+	// IPC accept loop runs in a goroutine so the main goroutine is free for
+	// the Fyne event loop (GLFW requires app.Run on the main goroutine).
 	go func() {
+		if serveErr := server.Serve(ctx); serveErr != nil {
+			d.log.Warn("daemon: ipc serve error", slog.Any("err", serveErr))
+		}
+	}()
+
+	// shutdownDone is closed after Daemon.Shutdown completes, giving Serve a
+	// clean synchronisation point regardless of whether Fyne is in use.
+	shutdownDone := make(chan struct{})
+
+	go func() { //nolint:gosec // G118: goroutine intentionally uses Background — ctx is cancelled on entry
 		<-ctx.Done()
 
-		// Initiate shutdown when the surrounding context cancels.
-		if shutdownErr := d.Shutdown(ctx); shutdownErr != nil {
+		// context.Background() is intentional: ctx is already cancelled here,
+		// so context.WithTimeout(ctx, ...) inside Shutdown would create an
+		// immediately-done context, causing the LIFO manager to skip all
+		// resource closers. A fresh background context gives the full timeout.
+		shutdownErr := d.Shutdown(context.Background()) //nolint:contextcheck // see above
+		if shutdownErr != nil {
 			d.log.Warn("voice: daemon shutdown reported error",
 				slog.Any("err", shutdownErr),
 			)
 		}
+
+		if d.settingsWin != nil {
+			d.settingsWin.Stop()
+		}
+
+		close(shutdownDone)
 	}()
 
-	if serveErr := server.Serve(ctx); serveErr != nil {
-		return fmt.Errorf("daemon: serve: %w", serveErr)
+	if d.settingsWin != nil {
+		// Run Fyne event loop on main goroutine (GLFW requirement).
+		// Blocks until Stop() is called from the shutdown goroutine above.
+		d.settingsWin.Run()
+		<-shutdownDone // usually already closed; ensures cleanup is complete
+	} else {
+		<-shutdownDone // headless: wait for shutdown before returning
 	}
 
 	return nil

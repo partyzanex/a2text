@@ -63,6 +63,7 @@ type Tray struct {
 	externalCh <-chan domain.State
 	stateIn    chan domain.State
 	toggleFn   func()
+	settingsFn func()
 	quitFn     func()
 	icons      map[domain.State][]byte
 	iconOnce   sync.Once
@@ -70,18 +71,34 @@ type Tray struct {
 
 // New returns a Tray wired with the given callbacks.
 // toggleFn is called when the user clicks the toggle menu item.
+// settingsFn is called when the user clicks "Настройки".
 // quitFn is called when the user clicks "Выход".
-// Either callback may be nil.
-func New(log *slog.Logger, toggleFn, quitFn func()) *Tray {
+// Any callback may be nil; nil callbacks are replaced with no-ops.
+func New(log *slog.Logger, toggleFn, settingsFn, quitFn func()) *Tray {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 
+	noop := func() {}
+
+	if toggleFn == nil {
+		toggleFn = noop
+	}
+
+	if settingsFn == nil {
+		settingsFn = noop
+	}
+
+	if quitFn == nil {
+		quitFn = noop
+	}
+
 	return &Tray{
-		stateIn:  make(chan domain.State, stateChBufTray),
-		log:      log,
-		toggleFn: toggleFn,
-		quitFn:   quitFn,
+		stateIn:    make(chan domain.State, stateChBufTray),
+		log:        log,
+		toggleFn:   toggleFn,
+		settingsFn: settingsFn,
+		quitFn:     quitFn,
 	}
 }
 
@@ -131,12 +148,13 @@ func (tr *Tray) Run(ctx context.Context) {
 		systray.SetTooltip("a2text: idle")
 
 		mToggle := systray.AddMenuItem("Переключить запись", "Начать или остановить диктовку")
+		mSettings := systray.AddMenuItem("Настройки", "Открыть окно настроек")
 
 		systray.AddSeparator()
 
 		mQuit := systray.AddMenuItem("Выход", "Остановить демон диктовки")
 
-		go tr.loop(ctx, mToggle, mQuit)
+		go tr.loop(ctx, mToggle, mSettings, mQuit)
 	}, func() {})
 }
 
@@ -166,7 +184,7 @@ func (tr *Tray) relayStates(ctx context.Context) {
 
 // loop is the tray event loop. It multiplexes context cancellation, incoming
 // state changes, and menu-item clicks.
-func (tr *Tray) loop(ctx context.Context, mToggle, mQuit *systray.MenuItem) {
+func (tr *Tray) loop(ctx context.Context, mToggle, mSettings, mQuit *systray.MenuItem) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -175,26 +193,35 @@ func (tr *Tray) loop(ctx context.Context, mToggle, mQuit *systray.MenuItem) {
 			return
 
 		case st, ok := <-tr.stateIn:
-			if !ok {
+			if !tr.applyState(st, ok) {
 				systray.Quit()
 
 				return
 			}
 
-			systray.SetIcon(tr.iconFor(st))
-			systray.SetTooltip("a2text: " + string(st))
-
 		case <-mToggle.ClickedCh:
-			if tr.toggleFn != nil {
-				tr.toggleFn()
-			}
+			tr.toggleFn()
+
+		case <-mSettings.ClickedCh:
+			go tr.settingsFn()
 
 		case <-mQuit.ClickedCh:
-			if tr.quitFn != nil {
-				tr.quitFn()
-			}
+			tr.quitFn()
 		}
 	}
+}
+
+// applyState updates the tray icon and tooltip to reflect the new state.
+// Returns false when the channel was closed (caller should quit).
+func (tr *Tray) applyState(st domain.State, ok bool) bool {
+	if !ok {
+		return false
+	}
+
+	systray.SetIcon(tr.iconFor(st))
+	systray.SetTooltip("a2text: " + string(st))
+
+	return true
 }
 
 // stateFromString maps external string state names to domain.State values.

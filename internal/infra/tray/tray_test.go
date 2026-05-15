@@ -100,7 +100,7 @@ func (s *TrayUnitSuite) TestCircleIcon_CornerPixelTransparent() {
 // slice (which would make the tray show a blank icon). SVG icons are used
 // when available; circle fallbacks are used for other states.
 func (s *TrayUnitSuite) TestAllStatesProduceNonEmptyIcons() {
-	tr := New(nil, nil, nil)
+	tr := New(nil, nil, nil, nil)
 
 	states := []domain.State{
 		domain.StateIdle,
@@ -120,7 +120,7 @@ func (s *TrayUnitSuite) TestAllStatesProduceNonEmptyIcons() {
 // TestSVGIconsDecodeToCorrectSize verifies that the three state SVG icons
 // decode to valid PNGs at the expected svgIconPx×svgIconPx resolution.
 func (s *TrayUnitSuite) TestSVGIconsDecodeToCorrectSize() {
-	tr := New(nil, nil, nil)
+	tr := New(nil, nil, nil, nil)
 
 	for _, st := range []domain.State{
 		domain.StateIdle,
@@ -158,7 +158,7 @@ func (s *TrayUnitSuite) TestSetState_MapsStringsToKnownStates() {
 // callers that pass nil must get a working Tray with a discard logger.
 func (s *TrayUnitSuite) TestNew_NilLog_DoesNotPanic() {
 	s.NotPanics(func() {
-		tr := New(nil, nil, nil)
+		tr := New(nil, nil, nil, nil)
 		s.Require().NotNil(tr)
 	})
 }
@@ -167,7 +167,7 @@ func (s *TrayUnitSuite) TestNew_NilLog_DoesNotPanic() {
 // than being replaced by the discard handler.
 func (s *TrayUnitSuite) TestNew_NonNilLog_Retained() {
 	s.NotPanics(func() {
-		tr := New(nil, nil, nil)
+		tr := New(nil, nil, nil, nil)
 		s.NotNil(tr.log)
 	})
 }
@@ -181,7 +181,7 @@ func (s *TrayUnitSuite) TestRun_NoDisplay_ReturnsImmediately() {
 	s.T().Setenv("WAYLAND_DISPLAY", "")
 	s.T().Setenv("DISPLAY", "")
 
-	tr := New(nil, nil, nil)
+	tr := New(nil, nil, nil, nil)
 
 	done := make(chan struct{})
 

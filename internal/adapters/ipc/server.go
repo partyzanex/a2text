@@ -166,7 +166,19 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) Shutdown() error {
 	s.shutdownOnce.Do(func() {
 		closeErr := s.listener.Close()
-		s.connWG.Wait()
+
+		// Wait for in-flight connections to finish, but do not wait forever:
+		// if a handler goroutine is stuck, we still want to remove the socket
+		// so that subsequent daemon invocations can bind the path cleanly.
+		done := make(chan struct{})
+
+		go func() { s.connWG.Wait(); close(done) }()
+
+		select {
+		case <-done:
+		case <-time.After(connDeadline + time.Second):
+			s.log.Warn("ipc: timed out waiting for in-flight connections during shutdown")
+		}
 
 		if rmErr := os.Remove(s.socketPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			s.log.Warn("ipc: failed to remove socket on shutdown",

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,10 @@ func (execPasteRunner) Run(
 
 	// Safe: binary is allowlisted above (wtype or ydotool), args are caller-controlled.
 	cmd := exec.CommandContext(deadlineCtx, name, args...) //nolint:gosec // binary allowlisted
+
+	if filepath.Base(name) == autopasteBackendXdotool {
+		cmd.Env = ensureDisplay(os.Environ())
+	}
 
 	var stderr bytes.Buffer
 
@@ -278,4 +283,17 @@ func (a *WaylandAutopaster) logger() *slog.Logger {
 	}
 
 	return slog.New(slog.DiscardHandler)
+}
+
+// ensureDisplay returns env with DISPLAY set. If DISPLAY is already present,
+// the slice is returned as-is. Otherwise "DISPLAY=:0" is appended — xdotool
+// needs an X11 display and the daemon may be launched without one in its env.
+func ensureDisplay(env []string) []string {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "DISPLAY=") {
+			return env
+		}
+	}
+
+	return append(env, "DISPLAY=:0")
 }
