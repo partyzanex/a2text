@@ -132,6 +132,7 @@ func applyOutputToMap(dst map[string]any, cfg *config.VoiceConfig) {
 
 	output["mode"] = cfg.Output.Mode
 	output["autopaste_command"] = cfg.Output.AutopasteCommand
+	output["restore_clipboard"] = cfg.Output.RestoreClipboard
 	dst["output"] = output
 }
 

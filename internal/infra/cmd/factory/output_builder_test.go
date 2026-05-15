@@ -33,7 +33,7 @@ func (s *OutputBuilderSuite) SetupTest() {
 }
 
 func (s *OutputBuilderSuite) TestNilCfg_FallsBackToLog_AndLogsWarn() {
-	out, err := buildOutputWith(nil, s.log, s.failingClip(), s.failingAutopaste())
+	out, err := buildOutputWith(nil, s.log, s.failingClip(), s.failingAutopaste(), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.LogOutput{}, out)
@@ -45,7 +45,7 @@ func (s *OutputBuilderSuite) TestNilLog_DoesNotPanic() {
 	cfg.Output.Mode = config.VoiceOutputModeStdout
 
 	s.NotPanics(func() {
-		_, err := buildOutputWith(cfg, nil, s.failingClip(), s.failingAutopaste())
+		_, err := buildOutputWith(cfg, nil, s.failingClip(), s.failingAutopaste(), noReader())
 		s.Require().NoError(err)
 	})
 }
@@ -54,7 +54,7 @@ func (s *OutputBuilderSuite) TestStdoutMode_ReturnsStdout_NoClipboardProbe() {
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = config.VoiceOutputModeStdout
 
-	out, err := buildOutputWith(cfg, s.log, s.failingClip(), s.failingAutopaste())
+	out, err := buildOutputWith(cfg, s.log, s.failingClip(), s.failingAutopaste(), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.StdoutOutput{}, out)
@@ -64,7 +64,7 @@ func (s *OutputBuilderSuite) TestUnknownMode_ReturnsError() {
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = "telepathy"
 
-	out, err := buildOutputWith(cfg, s.log, s.failingClip(), s.failingAutopaste())
+	out, err := buildOutputWith(cfg, s.log, s.failingClip(), s.failingAutopaste(), noReader())
 
 	s.Require().Error(err)
 	s.Nil(out)
@@ -76,7 +76,7 @@ func (s *OutputBuilderSuite) TestClipboardMode_BuildsClipboardOutput() {
 	cfg.Output.Mode = config.VoiceOutputModeClipboard
 	clip := NewMockSessionClipboard(s.ctrl)
 
-	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.failingAutopaste())
+	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.failingAutopaste(), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.ClipboardOutput{}, out)
@@ -86,7 +86,7 @@ func (s *OutputBuilderSuite) TestEmptyMode_DefaultsToClipboard() {
 	cfg := &config.VoiceConfig{}
 	clip := NewMockSessionClipboard(s.ctrl)
 
-	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.failingAutopaste())
+	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.failingAutopaste(), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.ClipboardOutput{}, out)
@@ -96,7 +96,7 @@ func (s *OutputBuilderSuite) TestClipboardMode_BackendErr_FallsBackToLog() {
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = config.VoiceOutputModeClipboard
 
-	out, err := buildOutputWith(cfg, s.log, s.stubClip(nil, clipboard.ErrNoBackend), s.failingAutopaste())
+	out, err := buildOutputWith(cfg, s.log, s.stubClip(nil, clipboard.ErrNoBackend), s.failingAutopaste(), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.LogOutput{}, out)
@@ -110,7 +110,7 @@ func (s *OutputBuilderSuite) TestAutopasteMode_BuildsAutopasteOutput() {
 	clip := NewMockSessionClipboard(s.ctrl)
 	paster := NewMockSessionAutopaster(s.ctrl)
 
-	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.stubAutopaste(paster, nil))
+	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.stubAutopaste(paster, nil), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.ClipboardAutopasteOutput{}, out)
@@ -123,7 +123,7 @@ func (s *OutputBuilderSuite) TestAutopasteMode_UnsupportedBackend_ReturnsError()
 	clip := NewMockSessionClipboard(s.ctrl)
 	apErr := clipboard.ErrUnsupportedAutopasteBackend
 
-	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.stubAutopaste(nil, apErr))
+	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil), s.stubAutopaste(nil, apErr), noReader())
 
 	s.Require().Error(err)
 	s.Require().ErrorIs(err, clipboard.ErrUnsupportedAutopasteBackend)
@@ -138,7 +138,7 @@ func (s *OutputBuilderSuite) TestAutopasteMode_MissingBackend_DegradesToClipboar
 	clip := NewMockSessionClipboard(s.ctrl)
 
 	out, err := buildOutputWith(cfg, s.log, s.stubClip(clip, nil),
-		s.stubAutopaste(nil, errors.New("wtype not found")))
+		s.stubAutopaste(nil, errors.New("wtype not found")), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.ClipboardOutput{}, out)
@@ -150,7 +150,7 @@ func (s *OutputBuilderSuite) TestAutopasteMode_ClipFails_FallsBackToLog_NoAutopa
 	cfg.Output.Mode = config.VoiceOutputModeClipboardAutopaste
 
 	out, err := buildOutputWith(cfg, s.log,
-		s.stubClip(nil, clipboard.ErrNoBackend), s.failingAutopaste())
+		s.stubClip(nil, clipboard.ErrNoBackend), s.failingAutopaste(), noReader())
 
 	s.Require().NoError(err)
 	s.IsType(&output.LogOutput{}, out)
@@ -199,5 +199,14 @@ func (s *OutputBuilderSuite) failingAutopaste() autopasteBuilderFn {
 		s.FailNow("autopaste builder must not be called")
 
 		return nil, nil
+	}
+}
+
+// noReader is the default reader builder for tests that do not exercise
+// the RestoreClipboard path — always returns ErrNoBackend so the
+// restore wiring degrades cleanly without touching the real session.
+func noReader() clipboardReaderBuilderFn {
+	return func(_ *slog.Logger) (SessionClipboardReader, error) {
+		return nil, clipboard.ErrNoBackend
 	}
 }

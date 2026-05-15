@@ -184,11 +184,11 @@ func (t *A2TextTheme) Size(name fyne.ThemeSizeName) float32 {
 
 // LabelColumnWidth is the fixed width of the right-aligned label column
 // in settings rows. Exported so settings widgets can size labels uniformly.
-// 270px (= 180 × 1.5) accommodates the longest Russian labels — including
+// 220px accommodates the longest Russian labels — including
 // "Включить встроенный хоткей", "Модификаторы (через запятую)" and the
 // "Порог тишины (dBFS)"-style multi-token captions — without truncation
 // or two-line wrap.
-const LabelColumnWidth float32 = 270
+const LabelColumnWidth float32 = 220
 
 // SectionHeaderTextSize is the font size used for card section headers
 // inside the settings window. Intentionally small (11px) — the spec calls

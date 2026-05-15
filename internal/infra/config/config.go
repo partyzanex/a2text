@@ -160,6 +160,20 @@ type VoiceOutputConfig struct {
 	//   - "wtype"   — force wtype.
 	//   - "ydotool" — force ydotool (needs ydotoold + /dev/uinput).
 	AutopasteCommand string `mapstructure:"autopaste_command"`
+
+	// RestoreClipboard, when true, snapshots the clipboard before the
+	// transcript is written and restores the previous payload after
+	// autopaste fires. Opt-in (default false) because the snapshot
+	// pipeline shells out to wl-paste / xclip on every cycle and the
+	// existing behaviour (transcript stays in clipboard) is what every
+	// pre-existing user installed against.
+	//
+	// Race-guard: if the clipboard no longer holds the transcript at
+	// restore time (user pressed Ctrl+C between paste and restore),
+	// the previous payload is NOT written back — the user's new copy
+	// wins. Only the primary MIME type is preserved; multi-type
+	// selections collapse to their preferred type.
+	RestoreClipboard bool `mapstructure:"restore_clipboard"`
 }
 
 // VoiceHotkeyMode selects how raw key edges are mapped to the SM.
@@ -571,9 +585,11 @@ func knownConfigKeys() map[string]bool {
 		"output":                   true,
 		"output.mode":              true,
 		"output.autopaste_command": true,
+		"output.restore_clipboard": true,
 		// Deprecated flat output keys (promoted to output.* in normalizeVoiceConfig)
 		"output_mode":       true,
 		"autopaste_command": true,
+		"restore_clipboard": true,
 		// daemon
 		"daemon":                       true,
 		"daemon.socket_path":           true,
@@ -618,6 +634,7 @@ func setVoiceDefaults(viperInst *viper.Viper) {
 	viperInst.SetDefault("privacy.keep_audio_format", VoiceKeepAudioFormatWAV)
 	viperInst.SetDefault("output_mode", VoiceOutputModeClipboard)
 	viperInst.SetDefault("autopaste_command", VoiceAutopasteCommandAuto)
+	viperInst.SetDefault("restore_clipboard", false)
 
 	// Capture defaults.
 	viperInst.SetDefault("capture.backend", VoiceCaptureBackendAuto)

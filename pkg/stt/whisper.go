@@ -22,11 +22,6 @@ import (
 	"github.com/partyzanex/a2text/pkg/sttx"
 )
 
-// whisperFullHook is a test seam: if non-nil, its integer value is used as the
-// whisper_full return code and the real C function is not called.
-// Set by tests to simulate inference failures without importing "C" in test files.
-var whisperFullHook *int
-
 // WhisperTranscriber performs speech-to-text using whisper.cpp via CGo.
 // All access to w.ctx is serialized by w.mu. whisper_full is a blocking C call
 // and cannot be interrupted mid-execution; context cancellation is a best-effort
@@ -44,6 +39,7 @@ func NewWhisperTranscriber(log *slog.Logger) *WhisperTranscriber {
 	if log == nil {
 		log = slog.Default()
 	}
+
 	return &WhisperTranscriber{log: log}
 }
 
@@ -54,13 +50,14 @@ func (w *WhisperTranscriber) LoadModel(path string) error {
 	if path == "" {
 		return fmt.Errorf("%w: empty model path", sttx.ErrTranscribeFailed)
 	}
+
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("%w: model file not found: %s", sttx.ErrTranscribeFailed, path)
 	}
 
 	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cPath))
 
+	defer C.free(unsafe.Pointer(cPath))
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -78,6 +75,7 @@ func (w *WhisperTranscriber) LoadModel(path string) error {
 	w.ctx = newCtx
 	w.modelPath = path
 	w.log.Info("whisper model loaded", slog.String("path", path))
+
 	return nil
 }
 
@@ -103,8 +101,8 @@ func (w *WhisperTranscriber) ReloadModel(newPath string) error {
 	}
 
 	cPath := C.CString(newPath)
-	defer C.free(unsafe.Pointer(cPath))
 
+	defer C.free(unsafe.Pointer(cPath))
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -117,6 +115,7 @@ func (w *WhisperTranscriber) ReloadModel(newPath string) error {
 			slog.String("new_path", newPath),
 			slog.String("prev_path", prevPath),
 		)
+
 		return fmt.Errorf("%w: failed to load model from %s", sttx.ErrTranscribeFailed, newPath)
 	}
 
@@ -130,11 +129,13 @@ func (w *WhisperTranscriber) ReloadModel(newPath string) error {
 		slog.String("new_path", newPath),
 		slog.String("prev_path", prevPath),
 	)
+
 	return nil
 }
 
 func initWhisperFromFile(path *C.char) *C.struct_whisper_context {
 	params := C.whisper_context_default_params()
+
 	return C.whisper_init_from_file_with_params(path, params)
 }
 
@@ -144,22 +145,12 @@ func initWhisperFromFile(path *C.char) *C.struct_whisper_context {
 func (w *WhisperTranscriber) Transcribe(ctx context.Context, wavPath string, lang string) (string, error) {
 	// Reject already-canceled contexts before doing any IO.
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
+		return "", fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
 	}
 
-	// WAV reading is pure IO and does not touch w.ctx, so it runs outside the lock.
-	d, err := wav.Open(wavPath)
+	samples, err := readWavSamples(wavPath, w.log)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
-	}
-	defer func() { _ = d.Close() }()
-
-	samples, err := d.ReadAll()
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
-	}
-	if len(samples) == 0 {
-		return "", fmt.Errorf("%w: empty audio", sttx.ErrTranscribeFailed)
+		return "", err
 	}
 
 	w.log.Info("transcribing", slog.String("wav", wavPath), slog.String("lang", lang), slog.Int("samples", len(samples)))
@@ -170,8 +161,9 @@ func (w *WhisperTranscriber) Transcribe(ctx context.Context, wavPath string, lan
 	// Re-check: context may have been canceled while waiting for the lock, or
 	// Close may have been called concurrently.
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
+		return "", fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
 	}
+
 	if w.ctx == nil {
 		return "", fmt.Errorf("%w: model not loaded", sttx.ErrTranscribeFailed)
 	}
@@ -183,7 +175,9 @@ func (w *WhisperTranscriber) Transcribe(ctx context.Context, wavPath string, lan
 
 	if lang != "" && lang != langAuto {
 		cLang := C.CString(lang)
+
 		defer C.free(unsafe.Pointer(cLang))
+
 		params.language = cLang
 	} else {
 		params.language = nil
@@ -193,59 +187,55 @@ func (w *WhisperTranscriber) Transcribe(ctx context.Context, wavPath string, lan
 	// whisper_full blocks until the entire file is processed; ctx cancellation
 	// cannot interrupt it once started.
 	var ret int
-	if whisperFullHook != nil {
-		ret = *whisperFullHook
+	if hook := getWhisperFullHook(); hook != nil {
+		ret = *hook
 	} else {
 		ret = int(C.whisper_full(w.ctx, params, (*C.float)(unsafe.Pointer(&samples[0])), C.int(len(samples))))
 	}
+
 	if ret != 0 {
 		return "", fmt.Errorf("%w: whisper_full returned %d", sttx.ErrTranscribeFailed, ret)
 	}
 
-	nSegments := int(C.whisper_full_n_segments(w.ctx))
-	var sb strings.Builder
-	for i := range nSegments {
-		text := C.GoString(C.whisper_full_get_segment_text(w.ctx, C.int(i)))
-		sb.WriteString(text)
-	}
-
-	resultText := strings.TrimSpace(sb.String())
-	w.log.Info("transcription complete", slog.Int("segments", nSegments), slog.Int("result_len", len(resultText)))
-	if resultText == "" {
-		return "", fmt.Errorf("%w: no speech detected", sttx.ErrEmptyResult)
-	}
-	return resultText, nil
+	return w.extractTranscriptionResult()
 }
 
 // DetectLanguage detects the spoken language in wavPath and returns the language code
 // (e.g. "ru", "en"). Uses whisper_pcm_to_mel + whisper_lang_auto_detect.
 func (w *WhisperTranscriber) DetectLanguage(ctx context.Context, wavPath string) (string, error) {
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
+		return "", fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
 	}
 
-	d, err := wav.Open(wavPath)
+	decoder, err := wav.Open(wavPath)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
+		return "", fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
 	}
-	defer func() { _ = d.Close() }()
 
-	samples, err := d.ReadAll()
+	defer func() {
+		if closeErr := decoder.Close(); closeErr != nil {
+			w.log.Debug("error closing decoder", slog.Any("error", closeErr))
+		}
+	}()
+
+	samples, err := decoder.ReadAll()
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
+		return "", fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
 	}
+
 	if len(samples) == 0 {
 		return "", fmt.Errorf("%w: empty audio", sttx.ErrTranscribeFailed)
 	}
 
-	w.log.Info("detecting language", slog.String("wav", wavPath), slog.Int("samples", len(samples)))
+	w.log.Info("detecting language", slog.String("decoder", wavPath), slog.Int("samples", len(samples)))
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("%w: %v", sttx.ErrTranscribeFailed, err)
+		return "", fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
 	}
+
 	if w.ctx == nil {
 		return "", fmt.Errorf("%w: model not loaded", sttx.ErrTranscribeFailed)
 	}
@@ -256,12 +246,14 @@ func (w *WhisperTranscriber) DetectLanguage(ctx context.Context, wavPath string)
 	}
 
 	langID := int(C.whisper_lang_auto_detect(w.ctx, C.int(0), C.int(1), nil))
+
 	if langID < 0 {
 		return "", fmt.Errorf("%w: language detection failed with code %d", sttx.ErrTranscribeFailed, langID)
 	}
 
 	lang := C.GoString(C.whisper_lang_str(C.int(langID)))
-	w.log.Info("language detected", slog.String("lang", lang), slog.String("wav", wavPath))
+	w.log.Info("language detected", slog.String("lang", lang), slog.String("decoder", wavPath))
+
 	return lang, nil
 }
 
@@ -276,6 +268,7 @@ func (w *WhisperTranscriber) Close() error {
 		w.modelPath = ""
 		w.log.Info("whisper model released")
 	}
+
 	return nil
 }
 
@@ -301,4 +294,46 @@ func (w *WhisperTranscriber) ListModels(_ context.Context) ([]string, error) {
 	}
 
 	return scanModelsDir(dir)
+}
+
+func (w *WhisperTranscriber) extractTranscriptionResult() (string, error) {
+	nSegments := int(C.whisper_full_n_segments(w.ctx))
+
+	var sb strings.Builder
+	for i := range nSegments {
+		text := C.GoString(C.whisper_full_get_segment_text(w.ctx, C.int(i)))
+		sb.WriteString(text)
+	}
+
+	resultText := strings.TrimSpace(sb.String())
+	w.log.Info("transcription complete", slog.Int("segments", nSegments), slog.Int("result_len", len(resultText)))
+
+	if resultText == "" {
+		return "", fmt.Errorf("%w: no speech detected", sttx.ErrEmptyResult)
+	}
+
+	return resultText, nil
+}
+
+func readWavSamples(wavPath string, log *slog.Logger) ([]float32, error) {
+	decoder, err := wav.Open(wavPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
+	}
+	defer func() {
+		if closeErr := decoder.Close(); closeErr != nil {
+			log.Debug("error closing decoder", slog.Any("error", closeErr))
+		}
+	}()
+
+	samples, err := decoder.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", sttx.ErrTranscribeFailed, err)
+	}
+
+	if len(samples) == 0 {
+		return nil, fmt.Errorf("%w: empty audio", sttx.ErrTranscribeFailed)
+	}
+
+	return samples, nil
 }

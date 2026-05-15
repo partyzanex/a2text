@@ -20,3 +20,11 @@ type PasteRunner interface {
 	LookPath(name string) (string, error)
 	Run(ctx context.Context, name string, args []string, timeout time.Duration) error
 }
+
+// ReadRunner is the seam for clipboard-read subprocesses. Distinct from
+// CopyRunner because reads need stdout capture and never feed stdin.
+// Implementations are expected to enforce binary allowlists.
+type ReadRunner interface {
+	LookPath(name string) (string, error)
+	RunCapture(ctx context.Context, name string, args []string, timeout time.Duration) ([]byte, error)
+}

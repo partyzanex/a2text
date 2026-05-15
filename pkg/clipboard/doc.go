@@ -4,3 +4,11 @@
 //
 // Selection happens at construction time based on $XDG_SESSION_TYPE.
 package clipboard
+
+const (
+	xclipFlagSelection      = "-selection"
+	xclipSelectionClipboard = "clipboard"
+	xclipFlagTarget         = "-t"
+	xclipFlagOutput         = "-o"
+	xclipTargetsTarget      = "TARGETS"
+)

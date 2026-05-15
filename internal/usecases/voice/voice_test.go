@@ -81,6 +81,7 @@ func (s *VoiceUseCaseSuite) TestCycle_NilReceiver_ReturnsError() {
 func (s *VoiceUseCaseSuite) TestCycle_NilCtx_ReturnsError() {
 	uc := s.newUseCase()
 
+	//nolint:SA1012 // intentional: testing nil context validation
 	_, err := uc.Cycle(nil, context.Background(), domain.RecordOpts{MaxDuration: time.Second}, "ru")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "nil")
@@ -89,6 +90,7 @@ func (s *VoiceUseCaseSuite) TestCycle_NilCtx_ReturnsError() {
 func (s *VoiceUseCaseSuite) TestCycle_NilRecordCtx_ReturnsError() {
 	uc := s.newUseCase()
 
+	//nolint:SA1012 // intentional: testing nil context validation
 	_, err := uc.Cycle(context.Background(), nil, domain.RecordOpts{MaxDuration: time.Second}, "ru")
 	s.Require().Error(err)
 	s.Contains(err.Error(), "nil")
@@ -454,6 +456,46 @@ func (s *VoiceUseCaseSuite) TestCycleError_NilErr_DoesNotPanic() {
 		msg := ce.Error()
 		s.Contains(msg, "record")
 	})
+}
+
+// --- SwapOutput: atomic output replacement ---
+
+// TestSwapOutput_NilReceiver_DoesNotPanic guards that SwapOutput is safe
+// to call on a nil receiver (defensive).
+func (s *VoiceUseCaseSuite) TestSwapOutput_NilReceiver_DoesNotPanic() {
+	var uc *VoiceUseCase
+
+	s.NotPanics(func() {
+		uc.SwapOutput(s.output)
+	})
+}
+
+// TestSwapOutput_NilNext_DoesNotPanic guards that passing a nil output
+// is safe (no-op, keeps the previous output).
+func (s *VoiceUseCaseSuite) TestSwapOutput_NilNext_DoesNotPanic() {
+	uc := s.newUseCase()
+
+	s.NotPanics(func() {
+		uc.SwapOutput(nil)
+	})
+}
+
+// TestSwapOutput_Swaps verifies that SwapOutput replaces the current output.
+func (s *VoiceUseCaseSuite) TestSwapOutput_Swaps() {
+	uc := s.newUseCase()
+
+	newOutput := NewMockOutput(s.ctrl)
+	uc.SwapOutput(newOutput)
+
+	// Verify the swap took effect by expecting the new output to be called.
+	newOutput.EXPECT().Deliver(gomock.Any(), "test").Return(nil)
+
+	wavPath := makeWAV(s.T(), 32000)
+	s.recorder.EXPECT().RecordToFile(gomock.Any(), gomock.Any()).Return(wavPath, nil)
+	s.transcriber.EXPECT().Transcribe(gomock.Any(), wavPath, "en").Return("test", nil)
+
+	_, err := uc.Cycle(context.Background(), context.Background(), domain.RecordOpts{MaxDuration: time.Second}, "en")
+	s.Require().NoError(err, "new output should be used after swap")
 }
 
 // --- helpers ---

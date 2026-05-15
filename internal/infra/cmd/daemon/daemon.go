@@ -202,6 +202,7 @@ func NewDaemon(deps *DaemonDeps) *Daemon {
 // for administrative reloads.
 func (d *Daemon) ReloadConfig(ctx context.Context) {
 	d.ReloadTranscriber(ctx)
+	d.ReloadOutput(ctx)
 	d.reloadHotkey(ctx)
 }
 
@@ -254,6 +255,32 @@ func (d *Daemon) ReloadTranscriber(ctx context.Context) {
 	d.log.Info("voice: transcriber reloaded",
 		slog.String("provider", d.cfg.Provider),
 	)
+}
+
+// ReloadOutput rebuilds the Output (clipboard / autopaste / restore) from the
+// current config and atomically swaps it into the use case. Called by
+// ReloadConfig when output-affecting settings (e.g., restore_clipboard) change.
+// Similar safety guarantees as ReloadTranscriber: cycles in flight use the old
+// output; only new cycles use the rebuilt one.
+func (d *Daemon) ReloadOutput(ctx context.Context) {
+	if d == nil || d.useCase == nil {
+		return
+	}
+
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
+
+	newOutput, err := factory.BuildOutput(d.cfg, d.log)
+	if err != nil {
+		d.log.Warn("voice: reload output failed; keeping current output",
+			slog.Any("err", err),
+		)
+
+		return
+	}
+
+	d.useCase.SwapOutput(newOutput)
+	d.log.Info("voice: output reloaded")
 }
 
 // AttachHotkey wires an optional global hotkey listener. Must be called

@@ -77,7 +77,7 @@ func (s *BuildOutputSuite) SetupTest() {
 // --- nil cfg ---
 
 func (s *BuildOutputSuite) TestNilConfig_ReturnsStdout() {
-	out, err := buildOutputWith(nil, nil, clipOK(s.ctrl), autopasteOK(s.ctrl))
+	out, err := buildOutputWith(nil, nil, clipOK(s.ctrl), autopasteOK(s.ctrl), noReader())
 	s.Require().NoError(err)
 	s.Require().NotNil(out)
 	s.NoError(out.Deliver(s.T().Context(), "test"))
@@ -89,7 +89,7 @@ func (s *BuildOutputSuite) TestStdoutMode_NestedField() {
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = config.VoiceOutputModeStdout
 
-	out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteOK(s.ctrl))
+	out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteOK(s.ctrl), noReader())
 	s.Require().NoError(err)
 	s.NoError(out.Deliver(s.T().Context(), "test"))
 }
@@ -100,7 +100,7 @@ func (s *BuildOutputSuite) TestUnknownMode_ReturnsError() {
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = "garbage"
 
-	_, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteOK(s.ctrl))
+	_, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteOK(s.ctrl), noReader())
 	s.Require().Error(err)
 	s.Contains(err.Error(), "garbage", "error must mention the unknown mode value")
 }
@@ -111,7 +111,7 @@ func (s *BuildOutputSuite) TestClipboardMode_NoBackend_FallsBackToStdout() {
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = config.VoiceOutputModeClipboard
 
-	out, err := buildOutputWith(cfg, nil, clipFail(clipboard.ErrNoBackend), autopasteOK(s.ctrl))
+	out, err := buildOutputWith(cfg, nil, clipFail(clipboard.ErrNoBackend), autopasteOK(s.ctrl), noReader())
 	s.Require().NoError(err)
 	s.NoError(out.Deliver(s.T().Context(), "test"))
 }
@@ -125,7 +125,7 @@ func (s *BuildOutputSuite) TestClipboardMode_DoesNotCallAutopaste() {
 		autopasteCalled = true
 
 		return NewMockSessionAutopaster(s.ctrl), nil
-	})
+	}, noReader())
 	s.Require().NoError(err)
 	s.False(autopasteCalled, "autopaste must not be called for plain clipboard mode")
 }
@@ -139,7 +139,7 @@ func (s *BuildOutputSuite) TestAutopasteMode_PassesCmdToBuilder() {
 
 	var gotCmd string
 
-	out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteCapture(s.ctrl, &gotCmd))
+	out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteCapture(s.ctrl, &gotCmd), noReader())
 	s.Require().NoError(err)
 	s.Equal(config.VoiceAutopasteCommandWtype, gotCmd)
 	s.NoError(out.Deliver(s.T().Context(), "test"))
@@ -150,7 +150,7 @@ func (s *BuildOutputSuite) TestAutopasteMode_NoBinary_FallsBackToClipboard() {
 	cfg.Output.Mode = config.VoiceOutputModeClipboardAutopaste
 	cfg.Output.AutopasteCommand = config.VoiceAutopasteCommandAuto
 
-	out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteNoBackend())
+	out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteNoBackend(), noReader())
 	s.Require().NoError(err)
 	s.NoError(out.Deliver(s.T().Context(), "test"))
 }
@@ -160,7 +160,7 @@ func (s *BuildOutputSuite) TestAutopasteMode_UnsupportedBackend_ReturnsError() {
 	cfg.Output.Mode = config.VoiceOutputModeClipboardAutopaste
 	cfg.Output.AutopasteCommand = "xdotool"
 
-	_, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteUnsupported())
+	_, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteUnsupported(), noReader())
 	s.Require().Error(err)
 	s.ErrorIs(err, clipboard.ErrUnsupportedAutopasteBackend)
 }
@@ -169,7 +169,7 @@ func (s *BuildOutputSuite) TestAutopasteMode_ClipboardFails_FallsBackToStdout() 
 	cfg := &config.VoiceConfig{}
 	cfg.Output.Mode = config.VoiceOutputModeClipboardAutopaste
 
-	out, err := buildOutputWith(cfg, nil, clipFail(clipboard.ErrNoBackend), autopasteOK(s.ctrl))
+	out, err := buildOutputWith(cfg, nil, clipFail(clipboard.ErrNoBackend), autopasteOK(s.ctrl), noReader())
 	s.Require().NoError(err)
 	s.NoError(out.Deliver(s.T().Context(), "test"))
 }
@@ -189,6 +189,7 @@ func (s *BuildOutputSuite) TestEmptyMode_ClipboardBuilderCalled() {
 			return clip, nil
 		},
 		autopasteOK(s.ctrl),
+		noReader(),
 	)
 	s.Require().NoError(err)
 	s.True(clipCalled, "clipboard builder must be called when mode is empty (default)")
@@ -201,7 +202,7 @@ func (s *BuildOutputSuite) TestNilLogger_StdoutMode_DoesNotPanic() {
 	cfg.Output.Mode = config.VoiceOutputModeStdout
 
 	s.NotPanics(func() {
-		out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteOK(s.ctrl))
+		out, err := buildOutputWith(cfg, nil, clipOK(s.ctrl), autopasteOK(s.ctrl), noReader())
 		s.Require().NoError(err)
 		s.Require().NotNil(out)
 	})
@@ -212,6 +213,6 @@ func (s *BuildOutputSuite) TestNilLogger_ClipboardMode_DoesNotPanic() {
 	cfg.Output.Mode = config.VoiceOutputModeClipboard
 
 	s.NotPanics(func() {
-		_, _ = buildOutputWith(cfg, nil, clipFail(clipboard.ErrNoBackend), autopasteNoBackend())
+		_, _ = buildOutputWith(cfg, nil, clipFail(clipboard.ErrNoBackend), autopasteNoBackend(), noReader())
 	})
 }

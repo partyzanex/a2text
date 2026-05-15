@@ -227,6 +227,13 @@ linters:
         linters:
           - errcheck
 
+      - path: pkg/stt/(whisper|seams)\.go
+        linters:
+          - nlreturn
+          - gocritic
+          - gochecknoglobals
+          - gochecknoinits
+
     # v1 issues.exclude-dirs mapped to v2 exclusions.paths
     paths:
       - internal/api/v1

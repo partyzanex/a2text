@@ -270,8 +270,9 @@ type formFields struct {
 	captureSilenceThreshold *widget.Entry
 
 	// output
-	outputMode *widget.Select
-	autopaste  *widget.Select
+	outputMode       *widget.Select
+	autopaste        *widget.Select
+	restoreClipboard *widget.Check
 
 	// hotkey
 	hotkeyEnabled *widget.Check
@@ -401,6 +402,7 @@ func attachAutoSave(ff *formFields, schedule func()) {
 		ff.hotkeyEnabled,
 		ff.whisperAutoDownload, ff.sttRetryEnabled,
 		ff.logTranscript, ff.keepAudio,
+		ff.restoreClipboard,
 	}
 	for _, chk := range checks {
 		chk.OnChanged = func(bool) { schedule() }
@@ -464,6 +466,7 @@ func (w *Window) setFieldValues(ff *formFields) {
 	ff.hotkeyEnabled.SetChecked(w.cfg.Hotkey.Enabled)
 	ff.logTranscript.SetChecked(w.cfg.Privacy.LogTranscript)
 	ff.keepAudio.SetChecked(w.cfg.Privacy.KeepAudio)
+	ff.restoreClipboard.SetChecked(w.cfg.Output.RestoreClipboard)
 
 	keepAudioFormat := w.cfg.Privacy.KeepAudioFormat
 	if keepAudioFormat == "" {

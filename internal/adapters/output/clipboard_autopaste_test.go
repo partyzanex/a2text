@@ -286,6 +286,103 @@ func (s *ClipboardAutopasteSuite) TestDeliver_HandBuiltZeroDelay_UsesDefault() {
 	s.Require().NoError(out.Deliver(context.Background(), "hello"))
 }
 
+// --- WithClipboardRestore: snapshot/restore pipeline ---
+
+func (s *ClipboardAutopasteSuite) TestRestore_HappyPath_PrevPayloadWrittenBack() {
+	delivery := NewMockClipboardDelivery(s.ctrl)
+	paster := NewMockAutopaster(s.ctrl)
+	snap := NewMockClipboardSnapshotter(s.ctrl)
+	restorer := NewMockClipboardTypedCopier(s.ctrl)
+
+	prev := ClipboardSnapshot{MIME: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}
+
+	// Pre-paste snapshot.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(prev, nil)
+	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	paster.EXPECT().Paste(gomock.Any()).Return(nil)
+	// Race-guard re-read returns the transcript.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(
+		ClipboardSnapshot{MIME: "text/plain", Data: []byte("hello")}, nil)
+	// Restore.
+	restorer.EXPECT().CopyTyped(gomock.Any(), "image/png", prev.Data).Return(nil)
+
+	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
+		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
+
+	s.Require().NoError(out.Deliver(context.Background(), "hello"))
+}
+
+// Race-guard: between paste and restore the user copied something else;
+// previous payload must NOT be written back.
+func (s *ClipboardAutopasteSuite) TestRestore_GuardMismatch_SkipsRestore() {
+	delivery := NewMockClipboardDelivery(s.ctrl)
+	paster := NewMockAutopaster(s.ctrl)
+	snap := NewMockClipboardSnapshotter(s.ctrl)
+	restorer := NewMockClipboardTypedCopier(s.ctrl)
+
+	prev := ClipboardSnapshot{MIME: "text/plain", Data: []byte("before")}
+
+	snap.EXPECT().Snapshot(gomock.Any()).Return(prev, nil)
+	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	paster.EXPECT().Paste(gomock.Any()).Return(nil)
+	// User Ctrl+C'd something else after paste; race-guard sees foreign data.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(
+		ClipboardSnapshot{MIME: "text/plain", Data: []byte("user-typed")}, nil)
+	// restorer.CopyTyped must NOT be called — strict mock fails the test if it is.
+
+	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
+		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
+
+	s.Require().NoError(out.Deliver(context.Background(), "hello"))
+}
+
+// Snapshot failure pre-delivery → WARN, restore disabled, transcript still delivered.
+func (s *ClipboardAutopasteSuite) TestRestore_SnapshotFails_RestoreSkipped() {
+	delivery := NewMockClipboardDelivery(s.ctrl)
+	paster := NewMockAutopaster(s.ctrl)
+	snap := NewMockClipboardSnapshotter(s.ctrl)
+	restorer := NewMockClipboardTypedCopier(s.ctrl)
+
+	snap.EXPECT().Snapshot(gomock.Any()).Return(ClipboardSnapshot{}, errors.New("wl-paste wedged"))
+	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	paster.EXPECT().Paste(gomock.Any()).Return(nil)
+	// No race-guard re-read, no CopyTyped (zero-snapshot short-circuits).
+
+	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
+		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
+
+	s.Require().NoError(out.Deliver(context.Background(), "hello"))
+}
+
+// Empty prev snapshot → restore short-circuits cleanly.
+func (s *ClipboardAutopasteSuite) TestRestore_EmptyPrev_RestoreSkipped() {
+	delivery := NewMockClipboardDelivery(s.ctrl)
+	paster := NewMockAutopaster(s.ctrl)
+	snap := NewMockClipboardSnapshotter(s.ctrl)
+	restorer := NewMockClipboardTypedCopier(s.ctrl)
+
+	snap.EXPECT().Snapshot(gomock.Any()).Return(ClipboardSnapshot{Empty: true}, nil)
+	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	paster.EXPECT().Paste(gomock.Any()).Return(nil)
+	// No restore call.
+
+	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
+		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
+
+	s.Require().NoError(out.Deliver(context.Background(), "hello"))
+}
+
+// WithClipboardRestore on nil deps returns the receiver unchanged.
+func (s *ClipboardAutopasteSuite) TestWithClipboardRestore_NilArgs_NoOp() {
+	delivery := NewMockClipboardDelivery(s.ctrl)
+	paster := NewMockAutopaster(s.ctrl)
+	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond, slog.New(slog.DiscardHandler))
+
+	s.Same(out, out.WithClipboardRestore(nil, nil))
+	s.Same(out, out.WithClipboardRestore(NewMockClipboardSnapshotter(s.ctrl), nil))
+	s.Same(out, out.WithClipboardRestore(nil, NewMockClipboardTypedCopier(s.ctrl)))
+}
+
 // --- logger() nil-safety ---
 
 func (s *ClipboardAutopasteSuite) TestLogger_NilReceiver_ReturnsNonNil() {

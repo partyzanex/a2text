@@ -167,3 +167,34 @@ func (c *WaylandClipboard) Copy(ctx context.Context, text string) error {
 
 	return nil
 }
+
+// CopyTyped writes raw bytes to the Wayland clipboard with an explicit
+// MIME type. Used by the clipboard restore-after-paste flow to put back
+// non-text payloads (image/png, text/html, …) the user had before the
+// transcript replaced them.
+//
+// Empty data is a no-op — wl-copy with --clear would actively wipe the
+// selection, which is the opposite of "restore"; skipping is correct.
+func (c *WaylandClipboard) CopyTyped(ctx context.Context, mime string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("clipboard: %w", err)
+	}
+
+	if len(data) == 0 {
+		return nil
+	}
+
+	if mime == "" {
+		return fmt.Errorf("clipboard: %w", ErrEmptyMIME)
+	}
+
+	args := []string{wlPasteFlagType, mime}
+	if err := c.runner.Run(ctx, c.binaryPath, args, data, copyTimeout); err != nil {
+		return fmt.Errorf("clipboard: %w", err)
+	}
+
+	c.log.Debug("voice: typed payload restored to clipboard",
+		slog.String("mime", mime), slog.Int("bytes", len(data)))
+
+	return nil
+}

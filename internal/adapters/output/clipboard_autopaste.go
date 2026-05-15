@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 // clipboard autopaste adapters. Defined here (consumer side) so output
 // does not import internal/adapters/clipboard — wiring connects them.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=output -destination=clipboard_autopaste_mocks_test.go -source=clipboard_autopaste.go Autopaster,ClipboardDelivery
+//go:generate go run go.uber.org/mock/mockgen@latest -package=output -destination=clipboard_autopaste_mocks_test.go -source=clipboard_autopaste.go Autopaster,ClipboardDelivery,ClipboardSnapshotter,ClipboardTypedCopier
 type Autopaster interface {
 	Paste(ctx context.Context) error
 }
@@ -24,6 +25,33 @@ type ClipboardDelivery interface {
 	Deliver(ctx context.Context, text string) error
 }
 
+// ClipboardSnapshot is the result of a pre-paste clipboard read. Mirrors
+// pkg/clipboard.Snapshot but is declared here so the output package does
+// not import the clipboard pkg directly — consumer-side interface.
+type ClipboardSnapshot struct {
+	// MIME is the primary content type. Empty when Empty == true.
+	MIME string
+	// Data is the raw clipboard bytes for MIME. May be nil for empty.
+	Data []byte
+	// Empty signals there was nothing to snapshot.
+	Empty bool
+}
+
+// ClipboardSnapshotter reads the current clipboard before transcript
+// delivery so it can be restored after the autopaste keystroke. Opt-in
+// dependency — nil disables snapshot/restore and Deliver behaves as
+// before (transcript replaces clipboard contents permanently).
+type ClipboardSnapshotter interface {
+	Snapshot(ctx context.Context) (ClipboardSnapshot, error)
+}
+
+// ClipboardTypedCopier writes raw bytes back to the clipboard with an
+// explicit MIME type. Used only by the restore path; the transcript
+// itself goes through ClipboardDelivery.
+type ClipboardTypedCopier interface {
+	CopyTyped(ctx context.Context, mime string, data []byte) error
+}
+
 // defaultPasteDelay is the brief pause between writing to the clipboard
 // and dispatching Ctrl+V. Both wl-copy and Wayland compositors hand off
 // the selection asynchronously; with no delay the keystroke may fire
@@ -31,6 +59,16 @@ type ClipboardDelivery interface {
 // well under the human-perceivable threshold and is the value GNOME's
 // own clipboard tooling uses internally.
 const defaultPasteDelay = 50 * time.Millisecond
+
+// restoreDelay is the pause between the autopaste keystroke and writing
+// the previous clipboard payload back. wtype/ydotool return after the
+// kernel/compositor accepts the events, but the target application
+// reads the selection asynchronously — restoring too early hands the
+// previous payload to the focused window instead of the transcript.
+// 250ms is well above worst-case observed read latency on GNOME/KDE
+// and small enough that the user does not see clipboard managers flash
+// twice.
+const restoreDelay = 250 * time.Millisecond
 
 // ErrClipboardAutopasteNotInitialized signals that ClipboardAutopasteOutput
 // was used as a zero value (or with nil-typed dependencies). Distinct from
@@ -64,12 +102,17 @@ var ErrClipboardAutopasteNotInitialized = errors.New("output: clipboard autopast
 type ClipboardAutopasteOutput struct {
 	delivery   ClipboardDelivery
 	autopaster Autopaster
-	delay      time.Duration
-	log        *slog.Logger
+	// snapshotter and restorer enable the optional save/restore-previous
+	// clipboard flow. Both must be non-nil for the flow to run; either nil
+	// disables snapshot/restore entirely (Deliver behaves as before).
+	snapshotter ClipboardSnapshotter
+	restorer    ClipboardTypedCopier
+	delay       time.Duration
+	log         *slog.Logger
 }
 
 // NewClipboardAutopasteOutput wires a clipboard-delivery step with an
-// autopaste step. Both arguments are required; logger may be nil.
+// autopaste step. delivery and paster are required; logger may be nil.
 //
 // delay defaults to 50ms when zero is passed — see defaultPasteDelay.
 func NewClipboardAutopasteOutput(
@@ -90,8 +133,34 @@ func NewClipboardAutopasteOutput(
 	return &ClipboardAutopasteOutput{delivery: delivery, autopaster: paster, delay: delay, log: log}
 }
 
-// Deliver runs the two-stage clipboard-then-paste pipeline. Returns nil
-// as long as the clipboard stage produced a recoverable copy of the text.
+// WithClipboardRestore returns a new ClipboardAutopasteOutput that also
+// snapshots the clipboard before delivery and restores it after the
+// autopaste keystroke. Either argument nil → returns the receiver
+// unchanged; this lets the factory call it unconditionally and the
+// runtime config decide.
+//
+// Restore is best-effort: snapshot failure → WARN + skip restore;
+// restore failure → WARN, transcript stays in clipboard. Race-guard:
+// before restoring, the current clipboard is re-read; if it no longer
+// matches the transcript we just wrote, the user has copied something
+// new in the meantime and we leave it alone.
+func (o *ClipboardAutopasteOutput) WithClipboardRestore(
+	snap ClipboardSnapshotter, restorer ClipboardTypedCopier,
+) *ClipboardAutopasteOutput {
+	if o == nil || snap == nil || restorer == nil {
+		return o
+	}
+
+	clone := *o
+	clone.snapshotter = snap
+	clone.restorer = restorer
+
+	return &clone
+}
+
+// Deliver runs the clipboard → paste (→ restore-previous) pipeline.
+// Returns nil as long as the clipboard stage produced a recoverable
+// copy of the text. The restore stage is best-effort and never raises.
 //
 // Defensive against hand-built receivers: ClipboardAutopasteOutput is an
 // exported struct, so a caller might assemble it with nil fields. We
@@ -109,6 +178,8 @@ func (o *ClipboardAutopasteOutput) Deliver(ctx context.Context, text string) err
 		return nil
 	}
 
+	prev := o.takeSnapshot(ctx)
+
 	if err := o.delivery.Deliver(ctx, text); err != nil {
 		return fmt.Errorf("clipboard autopaste: %w", err)
 	}
@@ -117,7 +188,138 @@ func (o *ClipboardAutopasteOutput) Deliver(ctx context.Context, text string) err
 		return fmt.Errorf("clipboard autopaste: %w", err)
 	}
 
-	return o.pasteAfterDelay(ctx, text)
+	if err := o.pasteAfterDelay(ctx, text); err != nil {
+		return err
+	}
+
+	o.maybeRestore(ctx, text, prev)
+
+	return nil
+}
+
+// takeSnapshot reads the current clipboard, if a snapshotter is wired.
+// Returns a zero ClipboardSnapshot on any failure or when no snapshotter
+// is configured — the restore step short-circuits on Empty/MIME=="".
+//
+// Logged WARN once on failure so the user is not surprised when the
+// previous content does not come back.
+func (o *ClipboardAutopasteOutput) takeSnapshot(ctx context.Context) ClipboardSnapshot {
+	if o.snapshotter == nil || o.restorer == nil {
+		return ClipboardSnapshot{}
+	}
+
+	snap, err := o.snapshotter.Snapshot(ctx)
+	if err != nil {
+		o.logger().Warn("voice: clipboard snapshot failed, restore disabled for this cycle",
+			slog.String("err", err.Error()))
+
+		return ClipboardSnapshot{}
+	}
+
+	return snap
+}
+
+// maybeRestore writes the previous clipboard payload back, guarded by a
+// race-check: if the clipboard no longer holds our transcript, the user
+// has copied something else in the meantime and we leave them alone.
+//
+// The guard is best-effort. snapshotter.Snapshot may legitimately fail
+// here (transient compositor hiccup) — in that case we err on the side
+// of "do not clobber" and skip restore.
+func (o *ClipboardAutopasteOutput) maybeRestore(ctx context.Context, transcript string, prev ClipboardSnapshot) {
+	if !o.canRestore(prev) {
+		return
+	}
+
+	if !o.waitRestoreDelay(ctx) {
+		return
+	}
+
+	if !o.guardClipboard(ctx, transcript) {
+		return
+	}
+
+	o.runRestore(ctx, prev)
+}
+
+// canRestore short-circuits when the restore stage was not wired or
+// when there is nothing meaningful to write back.
+func (o *ClipboardAutopasteOutput) canRestore(prev ClipboardSnapshot) bool {
+	if o.snapshotter == nil || o.restorer == nil {
+		return false
+	}
+
+	if prev.Empty || prev.MIME == "" || len(prev.Data) == 0 {
+		return false
+	}
+
+	return true
+}
+
+// waitRestoreDelay waits restoreDelay or until ctx is cancelled. Returns
+// false on cancellation so the caller skips restore.
+func (o *ClipboardAutopasteOutput) waitRestoreDelay(ctx context.Context) bool {
+	timer := time.NewTimer(restoreDelay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// guardClipboard re-reads the clipboard and returns true only when it
+// still holds the transcript we just wrote. Any other state — a foreign
+// payload, an empty clipboard, a read failure — means it is unsafe to
+// clobber whatever is there now.
+func (o *ClipboardAutopasteOutput) guardClipboard(ctx context.Context, transcript string) bool {
+	current, err := o.snapshotter.Snapshot(ctx)
+	if err != nil {
+		o.logger().Warn("voice: clipboard race-check failed, skipping restore",
+			slog.String("err", err.Error()))
+
+		return false
+	}
+
+	if !sameAsTranscript(current, transcript) {
+		o.logger().Debug("voice: clipboard changed since paste, skipping restore",
+			slog.String("current_mime", current.MIME))
+
+		return false
+	}
+
+	return true
+}
+
+func (o *ClipboardAutopasteOutput) runRestore(ctx context.Context, prev ClipboardSnapshot) {
+	if err := o.restorer.CopyTyped(ctx, prev.MIME, prev.Data); err != nil {
+		o.logger().Warn("voice: clipboard restore failed",
+			slog.String("mime", prev.MIME),
+			slog.Int("bytes", len(prev.Data)),
+			slog.String("err", err.Error()),
+		)
+
+		return
+	}
+
+	o.logger().Debug("voice: clipboard restored",
+		slog.String("mime", prev.MIME),
+		slog.Int("bytes", len(prev.Data)),
+	)
+}
+
+// sameAsTranscript reports whether snap holds (only) the transcript we
+// just wrote. Comparison is byte-exact against the UTF-8 encoded
+// transcript so trailing whitespace differences are not silently
+// normalised away.
+func sameAsTranscript(snap ClipboardSnapshot, transcript string) bool {
+	if snap.Empty {
+		return false
+	}
+
+	return bytes.Equal(snap.Data, []byte(transcript))
 }
 
 func (o *ClipboardAutopasteOutput) pasteAfterDelay(ctx context.Context, text string) error {

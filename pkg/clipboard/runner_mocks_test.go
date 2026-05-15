@@ -121,3 +121,57 @@ func (mr *MockPasteRunnerMockRecorder) Run(ctx, name, args, timeout any) *gomock
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Run", reflect.TypeOf((*MockPasteRunner)(nil).Run), ctx, name, args, timeout)
 }
+
+// MockReadRunner is a mock of ReadRunner interface.
+type MockReadRunner struct {
+	ctrl     *gomock.Controller
+	recorder *MockReadRunnerMockRecorder
+	isgomock struct{}
+}
+
+// MockReadRunnerMockRecorder is the mock recorder for MockReadRunner.
+type MockReadRunnerMockRecorder struct {
+	mock *MockReadRunner
+}
+
+// NewMockReadRunner creates a new mock instance.
+func NewMockReadRunner(ctrl *gomock.Controller) *MockReadRunner {
+	mock := &MockReadRunner{ctrl: ctrl}
+	mock.recorder = &MockReadRunnerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockReadRunner) EXPECT() *MockReadRunnerMockRecorder {
+	return m.recorder
+}
+
+// LookPath mocks base method.
+func (m *MockReadRunner) LookPath(name string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LookPath", name)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LookPath indicates an expected call of LookPath.
+func (mr *MockReadRunnerMockRecorder) LookPath(name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LookPath", reflect.TypeOf((*MockReadRunner)(nil).LookPath), name)
+}
+
+// RunCapture mocks base method.
+func (m *MockReadRunner) RunCapture(ctx context.Context, name string, args []string, timeout time.Duration) ([]byte, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RunCapture", ctx, name, args, timeout)
+	ret0, _ := ret[0].([]byte)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RunCapture indicates an expected call of RunCapture.
+func (mr *MockReadRunnerMockRecorder) RunCapture(ctx, name, args, timeout any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RunCapture", reflect.TypeOf((*MockReadRunner)(nil).RunCapture), ctx, name, args, timeout)
+}

@@ -27,7 +27,6 @@ type WhisperSuite struct {
 
 	w       *WhisperTranscriber
 	tempDir string
-	ctx     context.Context
 }
 
 func TestWhisperSuite(t *testing.T) {
@@ -39,8 +38,6 @@ func (s *WhisperSuite) SetupSuite() {
 	if modelPath == "" {
 		s.T().Skipf("set %s to a GGML model path to run whisper integration tests", modelPathEnv)
 	}
-
-	s.ctx = context.Background()
 
 	var err error
 
@@ -128,7 +125,7 @@ func (s *WhisperSuite) TestLoadModel_ReplacesExistingModel() {
 	s.Require().NoError(w.LoadModel(modelPath))
 
 	// Should still be usable after reload.
-	_, err := w.Transcribe(s.ctx, s.writeSilenceWAV("reload.wav", 0.5), "ru")
+	_, err := w.Transcribe(context.Background(), s.writeSilenceWAV("reload.wav", 0.5), "ru")
 	s.Require().NoError(err)
 }
 
@@ -139,7 +136,7 @@ func (s *WhisperSuite) TestTranscribe_ModelNotLoaded() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	w := NewWhisperTranscriber(log)
 
-	_, err := w.Transcribe(s.ctx, s.writeSilenceWAV("no-model.wav", 1.0), "ru")
+	_, err := w.Transcribe(context.Background(), s.writeSilenceWAV("no-model.wav", 1.0), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
@@ -153,7 +150,7 @@ func (s *WhisperSuite) TestTranscribeAfterClose() {
 	s.Require().NoError(w.LoadModel(modelPath))
 	s.Require().NoError(w.Close())
 
-	_, err := w.Transcribe(s.ctx, s.writeSilenceWAV("after-close.wav", 0.5), "ru")
+	_, err := w.Transcribe(context.Background(), s.writeSilenceWAV("after-close.wav", 0.5), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
@@ -162,7 +159,7 @@ func (s *WhisperSuite) TestTranscribeAfterClose() {
 
 // TestTranscribe_SilenceReturnsEmptyOrShort is the baseline happy-path test.
 func (s *WhisperSuite) TestTranscribe_SilenceReturnsEmptyOrShort() {
-	result, err := s.w.Transcribe(s.ctx, s.writeSilenceWAV("silence.wav", 2.0), "ru")
+	result, err := s.w.Transcribe(context.Background(), s.writeSilenceWAV("silence.wav", 2.0), "ru")
 	s.Require().NoError(err)
 	s.T().Logf("silence result: %q", result)
 }
@@ -170,7 +167,7 @@ func (s *WhisperSuite) TestTranscribe_SilenceReturnsEmptyOrShort() {
 // TestTranscribe_EmptyAudio covers the len(samples)==0 guard:
 // a valid WAV container with a 0-byte data chunk.
 func (s *WhisperSuite) TestTranscribe_EmptyAudio() {
-	_, err := s.w.Transcribe(s.ctx, s.writeSilenceWAV("empty.wav", 0.0), "ru")
+	_, err := s.w.Transcribe(context.Background(), s.writeSilenceWAV("empty.wav", 0.0), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
@@ -178,28 +175,28 @@ func (s *WhisperSuite) TestTranscribe_EmptyAudio() {
 // TestTranscribe_TruncatedAudio covers the ReadAll error branch:
 // the WAV header claims N samples but the file has no actual audio data.
 func (s *WhisperSuite) TestTranscribe_TruncatedAudio() {
-	_, err := s.w.Transcribe(s.ctx, s.writeTruncatedWAV("truncated.wav"), "ru")
+	_, err := s.w.Transcribe(context.Background(), s.writeTruncatedWAV("truncated.wav"), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
 
 // TestTranscribe_WrongSampleRate covers wav.Open rejection of 44100 Hz audio.
 func (s *WhisperSuite) TestTranscribe_WrongSampleRate() {
-	_, err := s.w.Transcribe(s.ctx, s.writeWAVWithFormat("wrong-rate.wav", 44100, 1, 44100), "ru")
+	_, err := s.w.Transcribe(context.Background(), s.writeWAVWithFormat("wrong-rate.wav", 44100, 1, 44100), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
 
 // TestTranscribe_StereoAudio covers wav.Open rejection of 2-channel audio.
 func (s *WhisperSuite) TestTranscribe_StereoAudio() {
-	_, err := s.w.Transcribe(s.ctx, s.writeWAVWithFormat("stereo.wav", 16000, 2, 16000), "ru")
+	_, err := s.w.Transcribe(context.Background(), s.writeWAVWithFormat("stereo.wav", 16000, 2, 16000), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
 
 // TestTranscribe_FileNotFound covers wav.Open failure on a missing path.
 func (s *WhisperSuite) TestTranscribe_FileNotFound() {
-	_, err := s.w.Transcribe(s.ctx, filepath.Join(s.tempDir, "nonexistent.wav"), "ru")
+	_, err := s.w.Transcribe(context.Background(), filepath.Join(s.tempDir, "nonexistent.wav"), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
@@ -209,7 +206,7 @@ func (s *WhisperSuite) TestTranscribe_NotAWAV() {
 	path := filepath.Join(s.tempDir, "bad.wav")
 	s.Require().NoError(os.WriteFile(path, []byte("not a wav file"), 0o600))
 
-	_, err := s.w.Transcribe(s.ctx, path, "ru")
+	_, err := s.w.Transcribe(context.Background(), path, "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
@@ -219,10 +216,10 @@ func (s *WhisperSuite) TestTranscribe_NotAWAV() {
 func (s *WhisperSuite) TestTranscribe_WhisperFullError() {
 	code := -1
 
-	whisperFullHook = &code
-	defer func() { whisperFullHook = nil }()
+	SetWhisperFullHook(&code)
+	defer SetWhisperFullHook(nil)
 
-	_, err := s.w.Transcribe(s.ctx, s.writeSilenceWAV("whisper-fail.wav", 0.5), "ru")
+	_, err := s.w.Transcribe(context.Background(), s.writeSilenceWAV("whisper-fail.wav", 0.5), "ru")
 	s.Require().Error(err)
 	s.ErrorIs(err, sttx.ErrTranscribeFailed)
 }
@@ -232,7 +229,7 @@ func (s *WhisperSuite) TestTranscribe_WhisperFullError() {
 // TestTranscribe_AutoLanguage checks that lang="auto" runs without unexpected error.
 // Silence input may produce ErrEmptyResult, which is acceptable.
 func (s *WhisperSuite) TestTranscribe_AutoLanguage() {
-	result, err := s.w.Transcribe(s.ctx, s.writeSilenceWAV("auto.wav", 1.0), "auto")
+	result, err := s.w.Transcribe(context.Background(), s.writeSilenceWAV("auto.wav", 1.0), "auto")
 	if err != nil {
 		s.Require().ErrorIs(err, sttx.ErrEmptyResult)
 	}
@@ -243,7 +240,7 @@ func (s *WhisperSuite) TestTranscribe_AutoLanguage() {
 // TestTranscribe_EmptyLangFallsBackToAutoDetect checks that lang="" triggers detection.
 // Silence input may produce ErrEmptyResult, which is acceptable.
 func (s *WhisperSuite) TestTranscribe_EmptyLangFallsBackToAutoDetect() {
-	result, err := s.w.Transcribe(s.ctx, s.writeSilenceWAV("empty-lang.wav", 1.0), "")
+	result, err := s.w.Transcribe(context.Background(), s.writeSilenceWAV("empty-lang.wav", 1.0), "")
 	if err != nil {
 		s.Require().ErrorIs(err, sttx.ErrEmptyResult)
 	}
@@ -256,7 +253,7 @@ func (s *WhisperSuite) TestTranscribe_EmptyLangFallsBackToAutoDetect() {
 // TestTranscribe_ContextAlreadyCanceled covers the early ctx.Err() check
 // (context canceled before any IO).
 func (s *WhisperSuite) TestTranscribe_ContextAlreadyCanceled() {
-	ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	_, err := s.w.Transcribe(ctx, s.writeSilenceWAV("ctx-cancel.wav", 0.5), "ru")
@@ -272,7 +269,7 @@ func (s *WhisperSuite) TestTranscribe_ContextCanceledWhileWaitingForLock() {
 	// Hold the mutex directly to simulate a long-running transcription.
 	s.w.mu.Lock()
 
-	ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -311,7 +308,7 @@ func (s *WhisperSuite) TestTranscribe_ConcurrentCallsAreSerialized() {
 		go func(i int) {
 			defer wg.Done()
 
-			_, errs[i] = s.w.Transcribe(s.ctx, wavPath, "ru")
+			_, errs[i] = s.w.Transcribe(context.Background(), wavPath, "ru")
 		}(i)
 	}
 

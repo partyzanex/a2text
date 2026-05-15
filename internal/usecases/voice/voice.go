@@ -82,6 +82,18 @@ func (uc *VoiceUseCase) SwapTranscriber(next Transcriber) {
 	uc.transcriber = next
 }
 
+// SwapOutput atomically replaces the current Output with a new one.
+// Safe to call concurrently with Cycle for the same reason as SwapTranscriber.
+// Used by the daemon when the user changes output-affecting settings
+// (e.g., restore_clipboard) in the live UI.
+func (uc *VoiceUseCase) SwapOutput(next Output) {
+	if uc == nil || next == nil {
+		return
+	}
+
+	uc.output = next
+}
+
 // AttachArchiver wires (or rewires) the optional kept-audio archiver.
 // Nil disables archiving. Safe to call before Cycle is ever invoked;
 // not safe to call concurrently with Cycle — the daemon constructs the

@@ -23,6 +23,8 @@ func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
 	output := rowsCard(i18n.T("card.output"),
 		formRowWithHelp(i18n.T("label.output_mode"), "help.output_mode", ff.outputMode),
 		formRowWithHelp(i18n.T("label.autopaste_command"), "help.autopaste_command", ff.autopaste),
+		formRowWithHelp(i18n.T("label.restore_clipboard"), "help.restore_clipboard",
+			leftAlign(ff.restoreClipboard)),
 	)
 
 	ipc := rowsCard(i18n.T("card.ipc"),
@@ -92,6 +94,7 @@ func (w *Window) buildOutputHotkeyDaemonFieldWidgets(ff *formFields) {
 		nil,
 	)
 	ff.logTranscript = widget.NewCheck("", nil)
+	ff.restoreClipboard = widget.NewCheck("", nil)
 	w.buildPrivacyFieldWidgets(ff)
 }
 
@@ -149,6 +152,7 @@ func (w *Window) openKeepAudioDirPicker(ff *formFields) {
 func (w *Window) applyOutputFields(ff *formFields) {
 	w.cfg.Output.Mode = ff.outputMode.Selected
 	w.cfg.Output.AutopasteCommand = ff.autopaste.Selected
+	w.cfg.Output.RestoreClipboard = ff.restoreClipboard.Checked
 }
 
 // applyDaemonFields writes daemon form values back to the config.

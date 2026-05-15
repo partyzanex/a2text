@@ -37,7 +37,7 @@ func (passthroughConverter) ToWAV(
 // interface so tests can inject fakes without depending on exec.Command.
 // Production code always passes an adapter that wraps *audio.FFmpegConverter.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=cmd -destination=converter_mocks_test.go -source=converter.go FFmpegInner
+//go:generate go run go.uber.org/mock/mockgen@latest -package=factory -destination=converter_mocks_test.go -source=converter.go FFmpegInner
 type FFmpegInner interface {
 	ToWAV(ctx context.Context, inputPath string) (string, error)
 }
