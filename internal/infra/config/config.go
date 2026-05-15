@@ -64,6 +64,9 @@ type VoiceConfig struct {
 
 	// Local whisper.cpp (used when Provider == VoiceProviderWhisperCpp).
 	ModelPath string `mapstructure:"model_path"`
+	// WhisperCppModelsDir is the directory where Whisper.cpp models are stored.
+	// If empty, defaults to ~/.local/share/a2text/models.
+	WhisperCppModelsDir string `mapstructure:"whisper_cpp_models_dir"`
 
 	// GoWhisper groups go-whisper HTTP service settings (used when
 	// Provider == VoiceProviderGoWhisper).

@@ -74,6 +74,7 @@ func applyToMap(dst map[string]any, cfg *config.VoiceConfig) {
 	dst["provider"] = cfg.Provider
 	dst["language"] = cfg.Language
 	dst["model_path"] = cfg.ModelPath
+	dst["whisper_cpp_models_dir"] = cfg.WhisperCppModelsDir
 	dst["cloud_provider"] = cfg.CloudProvider
 	dst["cloud_base_url"] = cfg.CloudBaseURL
 	dst["temp_dir"] = cfg.TempDir

@@ -10,9 +10,10 @@ import (
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 
-// buildCaptureHotkeyTab assembles the merged "Захват + Хоткей" tab —
-// both settings groups relate to how a recording cycle is initiated and
-// what audio is captured, so they sit naturally side-by-side.
+// buildCaptureHotkeyTab assembles the "Захват + Хоткей + Вывод" tab —
+// capture settings define what audio is recorded, hotkey controls how
+// the cycle is initiated, and output determines where the result goes.
+// Together they form the complete recording-to-delivery pipeline.
 func (w *Window) buildCaptureHotkeyTab(ff *formFields) fyne.CanvasObject {
 	capture := rowsCard(i18n.T("card.capture_audio"),
 		formRowWithHelp(i18n.T("label.backend"), "help.capture_backend", ff.captureBackend),
@@ -34,7 +35,14 @@ func (w *Window) buildCaptureHotkeyTab(ff *formFields) fyne.CanvasObject {
 		formRowWithHelp(i18n.T("label.backend"), "help.hotkey_backend", ff.hotkeyBackend),
 	)
 
-	return tabBody(capture, hotkey)
+	output := rowsCard(i18n.T("card.output"),
+		formRowWithHelp(i18n.T("label.output_mode"), "help.output_mode", ff.outputMode),
+		formRowWithHelp(i18n.T("label.autopaste_command"), "help.autopaste_command", ff.autopaste),
+		formRowWithHelp(i18n.T("label.restore_clipboard"), "help.restore_clipboard",
+			leftAlign(ff.restoreClipboard)),
+	)
+
+	return tabBody(capture, hotkey, output)
 }
 
 // buildCaptureFieldWidgets fills capture section widgets into ff.

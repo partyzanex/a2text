@@ -81,6 +81,9 @@ func RunBootstrap(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger
 	}
 
 	socketPath := sysd.DefaultSocketPath()
+	if cfg.Daemon.SocketPath != "" {
+		socketPath = cfg.Daemon.SocketPath
+	}
 
 	client := ipc.NewClient(socketPath, pingTimeout)
 

@@ -14,6 +14,8 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/partyzanex/a2text/internal/i18n"
@@ -60,12 +62,9 @@ func (w *Window) buildSTTTab(ff *formFields) fyne.CanvasObject {
 	)
 
 	ff.whisperCppCard = rowsCard(i18n.T("card.whisper_cpp"),
-		// SelectEntry is a composite widget — passing &ff.modelPath.Entry
-		// to formRowValidated would split it (only the inner Entry would
-		// be laid out) and the orphaned dropdown button would crash on
-		// click because its canvas pointer is never wired. Use the
-		// dedicated SelectEntry row helper, which places the full widget
-		// and attaches the validator + error caption around it.
+		formRowWithHelp(i18n.T("label.models_dir"), "help.cpp_models_dir",
+			w.buildWhisperCppModelsDirField(ff)),
+		formRowWithHelp(i18n.T("label.model"), "help.cpp_model_select", ff.whisperCppModel),
 		formRowSelectEntryValidatedWithHelp(
 			i18n.T("label.model_path"), "help.cpp_model_path",
 			ff.modelPath, validateWhisperCppModelPath,
@@ -116,6 +115,8 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 		whisperTimeout:      entryWithText(formatDuration(w.cfg.GoWhisper.Timeout), "30s"),
 		whisperAutoDownload: widget.NewCheck("", nil),
 		modelPath:           newWhisperCppModelPathEntry(w.cfg.ModelPath),
+		whisperCppModelsDir: entryWithText(w.cfg.WhisperCppModelsDir, ""),
+		whisperCppModel:     widget.NewSelect([]string{}, nil),
 		modelDownloadBtn:    widget.NewButton(i18n.T("button.download_model"), nil),
 		modelDownloadBar:    widget.NewProgressBar(),
 		modelDownloadMsg:    widget.NewLabel(""),
@@ -141,6 +142,7 @@ func (w *Window) applySTTFields(ff *formFields) {
 	w.cfg.GoWhisper.Timeout = parseDuration(ff.whisperTimeout.Text)
 	w.cfg.GoWhisper.AutoDownload = ff.whisperAutoDownload.Checked
 	w.cfg.ModelPath = ff.modelPath.Text
+	w.cfg.WhisperCppModelsDir = ff.whisperCppModelsDir.Text
 	w.cfg.CloudProvider = ff.cloudProvider.Text
 	w.cfg.CloudBaseURL = ff.cloudBaseURL.Text
 
@@ -439,13 +441,18 @@ func newModelSelectEntry(current string) *widget.SelectEntry {
 
 // commonWhisperCppModels lists the well-known GGML model filenames for
 // whisper.cpp.
-//
+const (
+	ggmlBaseBin   = "ggml-base.bin"
+	ggmlSmallBin  = "ggml-small.bin"
+	ggmlMediumBin = "ggml-medium.bin"
+)
+
 //nolint:gochecknoglobals // immutable lookup table for the model-path combobox
 var commonWhisperCppModels = []string{
 	"ggml-tiny.bin", "ggml-tiny.en.bin",
-	"ggml-base.bin", "ggml-base.en.bin",
-	"ggml-small.bin", "ggml-small.en.bin",
-	"ggml-medium.bin", "ggml-medium.en.bin",
+	ggmlBaseBin, "ggml-base.en.bin",
+	ggmlSmallBin, "ggml-small.en.bin",
+	ggmlMediumBin, "ggml-medium.en.bin",
 	"ggml-large-v1.bin",
 	"ggml-large-v2.bin",
 	"ggml-large-v3.bin",
@@ -464,6 +471,103 @@ func whisperCppModelsDir() string {
 	}
 
 	return ""
+}
+
+// scanWhisperCppModels scans a directory for available Whisper.cpp models (.bin files).
+func scanWhisperCppModels(dir string) []string {
+	if strings.TrimSpace(dir) == "" {
+		return []string{}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []string{}
+	}
+
+	var models []string
+
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".bin") {
+			models = append(models, entry.Name())
+		}
+	}
+
+	slices.Sort(models)
+
+	return models
+}
+
+// buildWhisperCppModelsDirField composes the models directory field with a folder picker button.
+func (w *Window) buildWhisperCppModelsDirField(ff *formFields) *fyne.Container {
+	browse := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		w.openWhisperCppModelsDirPicker(ff)
+	})
+
+	return container.NewBorder(nil, nil, nil, browse, ff.whisperCppModelsDir)
+}
+
+// openWhisperCppModelsDirPicker shows the native folder-open dialog for Whisper.cpp models directory.
+func (w *Window) openWhisperCppModelsDirPicker(ff *formFields) {
+	currentPath := strings.TrimSpace(ff.whisperCppModelsDir.Text)
+	if currentPath == "" {
+		currentPath = os.ExpandEnv("$HOME")
+	}
+
+	selectedPath, err := tryZenity(currentPath)
+	if err == nil {
+		ff.whisperCppModelsDir.SetText(selectedPath)
+		w.updateWhisperCppModelSelect(ff, selectedPath)
+
+		return
+	}
+
+	selectedPath, err = tryKdialog(currentPath)
+	if err == nil {
+		ff.whisperCppModelsDir.SetText(selectedPath)
+		w.updateWhisperCppModelSelect(ff, selectedPath)
+
+		return
+	}
+
+	w.openFyneFolderDialogForWhisperCppModels(ff)
+}
+
+// openFyneFolderDialogForWhisperCppModels shows the Fyne folder picker for Whisper.cpp models.
+func (w *Window) openFyneFolderDialogForWhisperCppModels(ff *formFields) {
+	if w.win == nil {
+		return
+	}
+
+	dirDialog := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
+		if err != nil {
+			w.log.Warn("settings: folder picker failed", slog.Any("err", err))
+
+			return
+		}
+
+		if uri == nil {
+			return
+		}
+
+		path := uri.Path()
+		ff.whisperCppModelsDir.SetText(path)
+		w.updateWhisperCppModelSelect(ff, path)
+	}, w.win)
+
+	dirDialog.SetFilter(nil)
+	dirDialog.Show()
+}
+
+// updateWhisperCppModelSelect updates the model select with available models from the given directory.
+func (w *Window) updateWhisperCppModelSelect(ff *formFields, dir string) {
+	models := scanWhisperCppModels(dir)
+
+	ff.whisperCppModel.Options = models
+	if len(models) > 0 && ff.whisperCppModel.Selected == "" {
+		ff.whisperCppModel.SetSelected(models[0])
+	}
+
+	ff.whisperCppModel.Refresh()
 }
 
 // newWhisperCppModelPathEntry builds the "Путь к модели" combobox.
@@ -489,9 +593,9 @@ func newWhisperCppModelPathEntry(current string) *widget.SelectEntry {
 	entry.SetText(current)
 
 	if dir != "" {
-		entry.SetPlaceHolder(filepath.Join(dir, "ggml-small.bin"))
+		entry.SetPlaceHolder(filepath.Join(dir, ggmlSmallBin))
 	} else {
-		entry.SetPlaceHolder("/path/to/ggml-small.bin")
+		entry.SetPlaceHolder("/path/to/" + ggmlSmallBin)
 	}
 
 	return entry

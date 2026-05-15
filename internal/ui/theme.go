@@ -193,7 +193,7 @@ const LabelColumnWidth float32 = 220
 // SectionHeaderTextSize is the font size used for card section headers
 // inside the settings window. Intentionally small (11px) — the spec calls
 // for "subheadings, not h2".
-const SectionHeaderTextSize float32 = 11
+const SectionHeaderTextSize float32 = 13
 
 // SectionHeaderTracking is inserted between each character of an uppercased
 // section header to approximate CSS letter-spacing. Fyne's canvas.Text has

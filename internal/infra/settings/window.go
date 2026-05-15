@@ -246,10 +246,12 @@ type formFields struct {
 	whisperCheckStatus  *canvas.Text
 
 	// whisper.cpp
-	modelPath        *widget.SelectEntry
-	modelDownloadBtn *widget.Button
-	modelDownloadBar *widget.ProgressBar
-	modelDownloadMsg *widget.Label
+	modelPath           *widget.SelectEntry
+	whisperCppModelsDir *widget.Entry
+	whisperCppModel     *widget.Select
+	modelDownloadBtn    *widget.Button
+	modelDownloadBar    *widget.ProgressBar
+	modelDownloadMsg    *widget.Label
 
 	// cloud
 	cloudProvider *widget.Entry
@@ -284,6 +286,7 @@ type formFields struct {
 	daemonSocketPath  *widget.Entry
 	daemonGracePeriod *widget.Entry
 	tempDir           *widget.Entry
+	tempDirButton     *widget.Button
 	convertTimeout    *widget.Entry
 	transcribeTimeout *widget.Entry
 	logLevel          *widget.Select
