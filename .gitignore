@@ -14,6 +14,7 @@ bin/
 coverage.txt
 coverage.xml
 coverage.out
+cover.out
 
 # Go cache
 .gocache/

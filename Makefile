@@ -21,7 +21,7 @@ GO_WHISPER_MODELS ?= ggml-small.bin
 GO_WHISPER_MODEL  ?= ggml-small
 
 CGO_CFLAGS  := -I$(CURDIR)/$(WHISPER_DIR)/include -I$(CURDIR)/$(WHISPER_DIR)/ggml/include
-CGO_LDFLAGS := -L$(CURDIR)/$(WHISPER_DIR)/build/src -L$(CURDIR)/$(WHISPER_DIR) -lwhisper -lm -lstdc++
+CGO_LDFLAGS := -L$(CURDIR)/$(WHISPER_DIR)/build/src -L$(CURDIR)/$(WHISPER_DIR) -lwhisper -lm -lstdc++ -Wl,-rpath,$(CURDIR)/$(WHISPER_DIR)/build/src
 
 PREFIX         ?= $(HOME)/.local
 DESTDIR        ?=
@@ -40,17 +40,11 @@ build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-# build-wayland: pure-Go build, no X11. Hotkey falls back to unsupported stub on Wayland.
+# build-wayland: pure-Go build (default target). Kept as an alias for the
+# legacy invocation; daemon detects Wayland/X11 at runtime and uses the
+# unified evdev + portal/uinput pipeline either way.
 .PHONY: build-wayland
 build-wayland: build
-
-# build-x11: enables X11 hotkey backend (XGrabKey via libX11/CGo).
-# Requires libX11-dev (apt: libx11-dev).
-.PHONY: build-x11
-build-x11:
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=1 go build -tags=x11 -ldflags '$(LDFLAGS)' \
-		-o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 # build-whisper: CGo build with local whisper.cpp STT provider.
 .PHONY: build-whisper
@@ -62,7 +56,6 @@ build-whisper: $(WHISPER_LIB)
 # --- Test ---
 
 # test-all: lint + all test suites (unit, integration, whisper CGo, go-whisper).
-# test-x11 is excluded — it requires a live X server; run manually with xvfb-run.
 .PHONY: test-all
 test-all: lint test test-integration test-whisper test-gowhisper
 
@@ -73,13 +66,6 @@ test:
 .PHONY: test-integration
 test-integration:
 	@CGO_ENABLED=1 go test -v -count=1 -race -tags=integration ./...
-
-# test-x11: runs X11 hotkey live tests against the host X server.
-# Skips when DISPLAY is unset or xdotool is missing. For headless: xvfb-run -a make test-x11
-.PHONY: test-x11
-test-x11:
-	@CGO_ENABLED=1 go test -v -count=1 -race -tags="x11 x11live" \
-		-run X11HotkeyKeypress ./pkg/hotkey/
 
 .PHONY: test-whisper
 test-whisper: $(WHISPER_MODEL_PATH)
@@ -97,12 +83,18 @@ $(MODEL_PATH):
 test-gowhisper:
 	@CGO_ENABLED=1 go test -v -count=1 -race -tags=integration ./tests/...
 
+# lint: .golangci.yml has `build-tags: [..., whisper]`, so the typechecker
+# follows whisper.go's `#include <whisper.h>`. Without CGO_CFLAGS pointing
+# at whisper.cpp/include the import fails to compile and the run aborts.
+# Mirror build-whisper's env so lint sees the same headers/libs.
 .PHONY: lint
 lint:
+	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml
 
 .PHONY: lint-fix
 lint-fix:
+	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml --fix
 
 .PHONY: deps
@@ -173,7 +165,7 @@ models-list:
 # The .desktop file (Exec=/usr/local/bin/a2text) must match the installed path
 # so xdg-desktop-portal can identify the process and grant GlobalShortcuts.
 .PHONY: install
-install: build
+install: build-whisper
 	install -Dm 755 $(BIN_DIR)/$(BINARY_NAME) $(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME)
 	sed "s|Exec=.*|Exec=$(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME)|" \
 		dist/a2text.desktop > /tmp/a2text.desktop

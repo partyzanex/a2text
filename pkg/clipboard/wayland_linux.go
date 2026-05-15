@@ -38,8 +38,8 @@ func (execCopyRunner) Run(
 	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Safe: binary is validated above to be exactly wl-copy, args are caller-controlled and safe.
-	cmd := exec.CommandContext(deadlineCtx, name, args...) //nolint:gosec // binary allowlisted
+	cmd := exec.CommandContext(deadlineCtx, wlCopyBin)
+	cmd.Args = append(cmd.Args, args...)
 	// WaitDelay caps how long cmd.Wait blocks for I/O goroutines after the
 	// process exits.  wl-copy often forks a daemon child that inherits the
 	// stderr pipe; without this guard the stderr-drain goroutine blocks

@@ -96,7 +96,7 @@ func Open(path string) (*Decoder, error) {
 	}
 
 	// Safe: path validated by validatePath above (not symlink, regular file, .wav ext, not empty).
-	file, err := os.Open(path) //nolint:gosec // path validated above
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, fmt.Errorf("wav: %w", err)
 	}

@@ -21,7 +21,7 @@ require (
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
-	github.com/BurntSushi/toml v1.5.0 // indirect
+	github.com/BurntSushi/toml v1.5.0
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/bendahl/uinput v1.7.0
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
@@ -69,7 +69,7 @@ require (
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
-	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
+	github.com/nicksnyder/go-i18n/v2 v2.5.1
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
@@ -99,5 +99,5 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.37.0
 )

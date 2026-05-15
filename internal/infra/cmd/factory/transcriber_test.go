@@ -214,7 +214,7 @@ func (s *BuildersSuite) validCfg(provider string) *config.VoiceConfig {
 	return &config.VoiceConfig{
 		Provider:  provider,
 		Language:  "ru",
-		GoWhisper: config.VoiceGoWhisperConfig{URL: "http://localhost:9081", Prefix: "/api/whisper"},
+		GoWhisper: config.VoiceGoWhisperConfig{URL: "http://localhost:9081/api/whisper"},
 	}
 }
 

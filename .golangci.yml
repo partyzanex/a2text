@@ -241,6 +241,8 @@ run:
   tests: true
   build-tags:
     - integration
+    - linux
+    - whisper
   go: '1.25'
 
 # In v2, gofmt lives under `formatters`, not as a linter.

@@ -30,8 +30,10 @@ func TestExampleConfig_ParsesAndValidates(t *testing.T) {
 	require.Equal(t, config.VoiceProviderGoWhisper, cfg.Provider)
 	require.Equal(t, "ru", cfg.Language)
 
-	require.Equal(t, "http://localhost:9081", cfg.GoWhisper.URL)
-	require.Equal(t, "/api/whisper", cfg.GoWhisper.Prefix)
+	// URL is the full base including the API path. Legacy configs with a
+	// separate "prefix" key are merged into URL during LoadVoice — see the
+	// pre-unmarshal fixup there.
+	require.Equal(t, "http://localhost:9081/api/whisper", cfg.GoWhisper.URL)
 	require.Equal(t, "ggml-large-v3-turbo", cfg.GoWhisper.Model)
 	require.Positive(t, cfg.GoWhisper.Timeout)
 	require.True(t, cfg.GoWhisper.AutoDownload)

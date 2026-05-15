@@ -45,9 +45,9 @@ type Config struct {
 	// Provider selects the STT backend. Use the Provider* constants above.
 	Provider string
 
-	// GoWhisper* are used when Provider == ProviderGoWhisper.
+	// GoWhisper* are used when Provider == ProviderGoWhisper. GoWhisperURL is
+	// the full base URL including any API path segment (e.g. ".../api/whisper").
 	GoWhisperURL          string
-	GoWhisperPrefix       string
 	GoWhisperModel        string
 	GoWhisperTimeout      time.Duration
 	GoWhisperAutoDownload bool
@@ -115,7 +115,6 @@ func Build(ctx context.Context, cfg *Config, log *slog.Logger) (transcribe.Trans
 func buildGoWhisper(ctx context.Context, cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
 	gowhisper := stt.NewGoWhisperTranscriber(stt.GoWhisperConfig{
 		BaseURL:      cfg.GoWhisperURL,
-		Prefix:       cfg.GoWhisperPrefix,
 		Model:        cfg.GoWhisperModel,
 		Timeout:      cfg.GoWhisperTimeout,
 		AutoDownload: cfg.GoWhisperAutoDownload,

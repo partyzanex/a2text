@@ -232,7 +232,7 @@ func goWhisperDeps(cfg *config.VoiceConfig) []Dependency {
 
 	// Probe the model-list endpoint: any HTTP response (even 4xx) proves the
 	// service is up. A network error means the daemon cannot reach it.
-	probeURL := strings.TrimRight(cfg.GoWhisper.URL, "/") + cfg.GoWhisper.Prefix + "/model"
+	probeURL := strings.TrimRight(cfg.GoWhisper.URL, "/") + "/model"
 
 	return []Dependency{{
 		Name:  config.VoiceProviderGoWhisper,
@@ -301,15 +301,28 @@ func whisperCppDeps(cfg *config.VoiceConfig, withConversion bool) []Dependency {
 		RequiredFor: sttRequiredFor,
 		Check: func(_ context.Context, env Env) CheckResult {
 			if !env.WhisperCppAvailable() {
+				// Hard miss: binary was built without -tags whisper.
+				// No model_path can save this — user must rebuild.
 				return CheckResult{}
 			}
 
 			if cfg.ModelPath == "" {
-				return CheckResult{}
+				// Soft miss: binary is linked but user has not yet
+				// pointed the daemon at a model file. Treat as "found"
+				// for depcheck purposes so the daemon still boots and
+				// the settings window can be opened to configure /
+				// download a model. The actual STT call will surface
+				// a clear runtime error if it fires before a model is
+				// set.
+				return CheckResult{Found: true, Detail: "linked; model not configured"}
 			}
 
 			if _, err := env.StatFile(cfg.ModelPath); err != nil {
-				return CheckResult{}
+				// Model path is set but file is missing — likely the
+				// user moved or deleted it. Same boot-tolerant
+				// treatment as the empty-path case: log via Detail
+				// and let the user fix it in settings.
+				return CheckResult{Found: true, Detail: "linked; model missing on disk"}
 			}
 
 			// Use basename only — full path may reveal sensitive home directory structure.
@@ -532,6 +545,26 @@ func hotkeyDeps(cfg *config.VoiceConfig) []Dependency {
 	}
 }
 
+// firstReadable returns true if the given /dev/input/event* path can be
+// opened for reading. The file is closed before returning; a Close error
+// (rare on a fresh just-opened device) is logged-and-swallowed because
+// failing the probe here would mask the real signal — "the user has read
+// access" — that the open succeeded.
+func firstReadable(path string) bool {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+
+	if closeErr := file.Close(); closeErr != nil {
+		// stderr is the only sink available from a probe Check (no logger
+		// is plumbed through). The line is rare and operator-visible.
+		fmt.Fprintf(os.Stderr, "depcheck: close %s after probe: %v\n", path, closeErr)
+	}
+
+	return true
+}
+
 // evdevHotkeyDep probes /dev/input for at least one readable event device.
 // The backend itself iterates all event nodes and skips unreadable ones, so
 // the probe answers "does the daemon have ANY access at all?" — usually a
@@ -550,10 +583,7 @@ func evdevHotkeyDep() Dependency {
 			}
 
 			for _, path := range matches {
-				file, openErr := os.Open(path) //nolint:gosec // kernel-managed device node
-				if openErr == nil {
-					_ = file.Close() //nolint:errcheck // probe — open success is all we needed
-
+				if firstReadable(path) {
 					return CheckResult{Found: true, Detail: path}
 				}
 			}

@@ -1,26 +1,33 @@
 package settings
 
 import (
+	"context"
 	"log/slog"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/partyzanex/a2text/assets"
+	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/ui"
 )
 
 const (
-	windowWidth   = 700
-	windowHeight  = 750
-	buttonColumns = 2
+	windowWidth  = 700
+	windowHeight = 750
+
+	// autoSaveDelay is the debounce window between the last field edit and
+	// the actual disk write. Long enough to coalesce a burst of keystrokes
+	// in a text field into a single save; short enough that the user does
+	// not have to wait noticeably for changes to land.
+	autoSaveDelay = 500 * time.Millisecond
 )
 
 // Window wraps the Fyne application and settings window lifecycle.
@@ -32,6 +39,96 @@ type Window struct {
 	app      fyne.App
 	win      fyne.Window
 	stopOnce sync.Once
+	saver    *autoSaver
+
+	// downloader is the whisper.cpp model fetcher used by the
+	// "Скачать модель" button in the whisper.cpp card. Lazily-initialised
+	// on first download so unit tests can swap it via the unexported
+	// Downloader field; see SetDownloader in window_internal_test.go.
+	downloader     ModelDownloader
+	downloadCancel context.CancelFunc
+	downloadMu     sync.Mutex
+
+	// onConfigChanged is invoked from persistSave after a successful
+	// disk write. The daemon registers a hook here to rebuild the STT
+	// transcriber so provider/URL/model changes take effect immediately.
+	onConfigChanged func()
+
+	// rootCtxFn, when set via SetRootContext, returns the parent context
+	// for any long-running goroutine the window spawns (currently: model
+	// download). Cancelling the daemon ctx cancels in-flight downloads.
+	// Stored as a function instead of a context.Context field to avoid
+	// the containedctx lint rule — Fyne UI callbacks (OnTapped, goroutines
+	// launched from them) do not accept context parameters, so the context
+	// must be captured at the call site rather than passed through.
+	rootCtxFn func() context.Context
+}
+
+// SetRootContext links the window's background work to a parent
+// context. Typically called by the daemon bootstrap before Run() so
+// daemon shutdown cleanly cancels in-flight model downloads. Safe to
+// omit — the window falls back to context.Background().
+func (w *Window) SetRootContext(ctx context.Context) {
+	w.rootCtxFn = func() context.Context { return ctx }
+}
+
+// SetOnConfigChanged registers a callback the window fires after every
+// successful auto-save. Used by the daemon to rebuild STT-affecting
+// dependencies (transcriber, silence gate) without forcing the user to
+// restart the process after every settings tweak. Pass nil to detach.
+func (w *Window) SetOnConfigChanged(fn func()) {
+	w.onConfigChanged = fn
+}
+
+// autoSaver coalesces a stream of field-change events into a single
+// debounced save. Schedule() (re)arms the timer; the most recent call
+// wins. Flush() forces an immediate save and cancels any pending timer
+// — used on window close so the user never loses an in-flight edit.
+//
+// Safe for concurrent use: Schedule may be called from the Fyne
+// goroutine while Flush runs from the close handler.
+type autoSaver struct {
+	mu    sync.Mutex
+	timer *time.Timer
+	delay time.Duration
+	fn    func()
+}
+
+func newAutoSaver(delay time.Duration, fn func()) *autoSaver {
+	return &autoSaver{delay: delay, fn: fn}
+}
+
+// Schedule (re)arms the debounce timer. If a previous Schedule call has
+// not yet fired, its timer is stopped and replaced.
+func (a *autoSaver) Schedule() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.timer != nil {
+		a.timer.Stop()
+	}
+
+	a.timer = time.AfterFunc(a.delay, a.fn)
+}
+
+// Flush cancels any pending timer and runs the save immediately if a
+// save was pending. Idempotent — flushing twice when nothing is pending
+// is a no-op.
+func (a *autoSaver) Flush() {
+	a.mu.Lock()
+
+	timer := a.timer
+	a.timer = nil
+
+	a.mu.Unlock()
+
+	if timer == nil {
+		return
+	}
+
+	if timer.Stop() {
+		a.fn()
+	}
 }
 
 // New creates a Window. cfg is the live config pointer; changes are written
@@ -55,6 +152,7 @@ func (w *Window) Run() {
 	runtime.LockOSThread()
 
 	fyneApp := app.NewWithID("io.github.partyzanex.a2text")
+	fyneApp.Settings().SetTheme(ui.Theme())
 	w.app = fyneApp
 
 	// A hidden stub window keeps the event loop alive between settings opens;
@@ -98,30 +196,60 @@ func (w *Window) Show() {
 			return
 		}
 
-		w.win = w.app.NewWindow("a2text — Настройки")
+		// Re-initialise i18n with the user's currently saved UI language
+		// so a relaunched window picks up a language switch from the
+		// previous session without restarting the daemon.
+		if err := i18n.Init(w.cfg.UILanguage); err != nil {
+			w.log.Warn("settings: i18n init failed, falling back to defaults", slog.Any("err", err))
+		}
+
+		w.win = w.app.NewWindow(i18n.T("window.title"))
 		w.win.Resize(fyne.NewSize(windowWidth, windowHeight))
 		w.win.SetFixedSize(false)
 		w.win.SetContent(w.buildContent())
-		w.win.SetOnClosed(func() { w.win = nil })
+		w.win.SetOnClosed(func() {
+			// Flush any pending debounced edit so closing the window
+			// without waiting 500ms still persists the last change.
+			if w.saver != nil {
+				w.saver.Flush()
+			}
+
+			w.win = nil
+			w.saver = nil
+		})
 		w.win.Show()
 	})
+}
+
+// rootCtx returns the stored root context or context.Background() as fallback.
+func (w *Window) rootCtx() context.Context {
+	if w.rootCtxFn != nil {
+		return w.rootCtxFn()
+	}
+
+	return context.Background()
 }
 
 // formFields carries all the widget references needed to read values on Save.
 type formFields struct {
 	// STT — general
-	provider *widget.Select
-	language *widget.Entry
+	provider   *widget.Select
+	language   *widget.Select
+	uiLanguage *widget.Select
 
 	// go-whisper
 	whisperURL          *widget.Entry
-	whisperPrefix       *widget.Entry
-	whisperModel        *widget.Entry
+	whisperModel        *widget.SelectEntry
 	whisperTimeout      *widget.Entry
 	whisperAutoDownload *widget.Check
+	whisperCheckBtn     *widget.Button
+	whisperCheckStatus  *canvas.Text
 
 	// whisper.cpp
-	modelPath *widget.Entry
+	modelPath        *widget.SelectEntry
+	modelDownloadBtn *widget.Button
+	modelDownloadBar *widget.ProgressBar
+	modelDownloadMsg *widget.Label
 
 	// cloud
 	cloudProvider *widget.Entry
@@ -135,19 +263,19 @@ type formFields struct {
 	sttRetryMaxAttempts *widget.Entry
 
 	// capture
-	captureBackend     *widget.Select
-	captureSampleRate  *widget.Entry
-	captureChannels    *widget.Entry
-	captureMaxDuration *widget.Entry
+	captureBackend          *widget.Select
+	captureSampleRate       *widget.Entry
+	captureChannels         *widget.Entry
+	captureMaxDuration      *widget.Entry
+	captureSilenceThreshold *widget.Entry
 
 	// output
 	outputMode *widget.Select
-	autopaste  *widget.Entry
+	autopaste  *widget.Select
 
 	// hotkey
 	hotkeyEnabled *widget.Check
-	hotkeyKey     *widget.Entry
-	hotkeyMods    *widget.Entry
+	hotkeyBinding *hotkeyCaptureButton
 	hotkeyMode    *widget.Select
 	hotkeyBackend *widget.Select
 
@@ -160,148 +288,123 @@ type formFields struct {
 	logLevel          *widget.Select
 
 	// privacy
-	logTranscript *widget.Check
-	keepAudio     *widget.Check
+	logTranscript   *widget.Check
+	keepAudio       *widget.Check
+	keepAudioDir    *widget.Entry
+	keepAudioFormat *widget.Select
+
+	// Provider-specific STT cards. Tracked here so changing the
+	// "Провайдер STT" select can show only the matching card and hide
+	// the irrelevant ones. Populated by buildSTTTab; nil before then.
+	goWhisperCard  fyne.CanvasObject
+	whisperCppCard fyne.CanvasObject
+	cloudCard      fyne.CanvasObject
 }
 
 func (w *Window) buildContent() fyne.CanvasObject {
 	ff := w.buildFields()
 
-	saveBtn := widget.NewButton("Сохранить", func() { w.save(ff) })
-	saveBtn.Importance = widget.HighImportance
-
-	cancelBtn := widget.NewButton("Отмена", func() {
-		if w.win != nil {
-			w.win.Close()
-		}
-	})
+	// Auto-save: every field change re-arms a debounce timer; once the
+	// user has been quiet for autoSaveDelay the latest values are flushed
+	// to disk. Replaces the explicit Save/Cancel buttons.
+	w.saver = newAutoSaver(autoSaveDelay, func() { w.save(ff) })
+	attachAutoSave(ff, w.saver.Schedule)
 
 	tabs := container.NewAppTabs(
-		container.NewTabItem("STT", w.buildSTTTab(ff)),
-		container.NewTabItem("Захват", w.buildCaptureTab(ff)),
-		container.NewTabItem("Вывод", w.buildOutputTab(ff)),
-		container.NewTabItem("Хоткей", w.buildHotkeyTab(ff)),
-		container.NewTabItem("Демон", w.buildDaemonTab(ff)),
-		container.NewTabItem("Приватность", w.buildPrivacyTab(ff)),
+		container.NewTabItemWithIcon(i18n.T("tab.stt"), assets.UIIcon("mic"), w.buildSTTTab(ff)),
+		container.NewTabItemWithIcon(
+			i18n.T("tab.capture_hotkey"), assets.UIIcon("record"), w.buildCaptureHotkeyTab(ff),
+		),
+		container.NewTabItemWithIcon(i18n.T("tab.daemon"), assets.UIIcon("server"), w.buildDaemonTab(ff)),
 	)
 
-	buttons := container.NewGridWithColumns(buttonColumns, saveBtn, cancelBtn)
+	// Resize the window to fit the active tab so each tab gets a
+	// height that matches its content, not the largest. fitWindowToTab
+	// reads the inner VBox MinSize from inside the Scroll wrapper.
+	tabs.OnSelected = func(t *container.TabItem) { w.fitWindowToTab(t) }
 
-	return container.NewBorder(nil, buttons, nil, nil, tabs)
+	// Apply initial sizing once the window backs the canvas — running
+	// it inline here would race the Show() that hasn't returned yet.
+	fyne.Do(func() { w.fitWindowToTab(tabs.Selected()) })
+
+	// Provider-driven card visibility. Run AFTER buildSTTTab (which
+	// populates the card refs on ff) and AFTER attachAutoSave (which
+	// installed the generic schedule-only OnChanged); the override below
+	// chains both behaviours into one handler. Initial apply makes the
+	// window show only the relevant card on first open.
+	applyProviderVisibility(ff)
+	ff.provider.OnChanged = func(string) {
+		applyProviderVisibility(ff)
+		w.fitWindowToTab(tabs.Selected())
+		w.saver.Schedule()
+	}
+
+	return tabs
 }
 
-// buildSTTTab assembles the STT settings tab with cards for each sub-section.
-func (w *Window) buildSTTTab(ff *formFields) fyne.CanvasObject {
-	generalForm := widget.NewForm(
-		widget.NewFormItem("Провайдер STT", ff.provider),
-		widget.NewFormItem("Язык", ff.language),
-	)
+// fitWindowToTab resizes the settings window so its body height
+// matches the active tab's content height.
+func (w *Window) fitWindowToTab(tab *container.TabItem) {
+	if w.win == nil || tab == nil {
+		return
+	}
 
-	goWhisperForm := widget.NewForm(
-		widget.NewFormItem("URL", ff.whisperURL),
-		widget.NewFormItem("Prefix", ff.whisperPrefix),
-		widget.NewFormItem("Модель", ff.whisperModel),
-		widget.NewFormItem("Таймаут", ff.whisperTimeout),
-		widget.NewFormItem("Авто-загрузка модели", ff.whisperAutoDownload),
-	)
+	// Tab bar + window-frame padding the OS will eat at the top/bottom.
+	// Empirically 80dp is enough on GNOME at scale 1.0; smaller values
+	// cause the last form row to clip; larger values waste space.
+	const tabChromeHeight float32 = 80
 
-	whisperCppForm := widget.NewForm(
-		widget.NewFormItem("Путь к модели", ff.modelPath),
-	)
+	scroll, ok := tab.Content.(*container.Scroll)
+	if !ok {
+		return
+	}
 
-	cloudForm := widget.NewForm(
-		widget.NewFormItem("Провайдер", ff.cloudProvider),
-		widget.NewFormItem("API ключ", ff.cloudAPIKey),
-		widget.NewFormItem("Base URL", ff.cloudBaseURL),
-	)
-
-	retryForm := widget.NewForm(
-		widget.NewFormItem("Включить ретраи", ff.sttRetryEnabled),
-		widget.NewFormItem("Начальная задержка", ff.sttRetryInitDelay),
-		widget.NewFormItem("Макс. задержка", ff.sttRetryMaxDelay),
-		widget.NewFormItem("Макс. попыток", ff.sttRetryMaxAttempts),
-	)
-
-	content := container.NewVBox(
-		widget.NewCard("Общее", "", generalForm),
-		widget.NewCard("go-whisper", "", goWhisperForm),
-		widget.NewCard("whisper.cpp", "", whisperCppForm),
-		widget.NewCard("Облако", "", cloudForm),
-		widget.NewCard("Ретраи STT", "", retryForm),
-	)
-
-	return container.NewScroll(content)
+	contentHeight := scroll.Content.MinSize().Height
+	w.win.Resize(fyne.NewSize(windowWidth, contentHeight+tabChromeHeight))
 }
 
-// buildCaptureTab assembles the audio capture settings tab.
-func (w *Window) buildCaptureTab(ff *formFields) fyne.CanvasObject {
-	form := widget.NewForm(
-		widget.NewFormItem("Бэкенд", ff.captureBackend),
-		widget.NewFormItem("Частота дискретизации", ff.captureSampleRate),
-		widget.NewFormItem("Каналы", ff.captureChannels),
-		widget.NewFormItem("Макс. длительность", ff.captureMaxDuration),
-	)
+// attachAutoSave wires the same schedule() callback into the OnChanged
+// hook of every editable widget. MUST run AFTER setFieldValues —
+// SetSelected/SetChecked invoke OnChanged, which would otherwise trigger
+// a spurious save during window construction.
+func attachAutoSave(ff *formFields, schedule func()) {
+	entries := []*widget.Entry{
+		ff.whisperURL, ff.whisperTimeout, ff.keepAudioDir,
+		ff.cloudProvider, ff.cloudAPIKey, ff.cloudBaseURL,
+		ff.sttRetryInitDelay, ff.sttRetryMaxDelay, ff.sttRetryMaxAttempts,
+		ff.captureSampleRate, ff.captureChannels, ff.captureMaxDuration,
+		ff.captureSilenceThreshold,
+		ff.daemonSocketPath, ff.daemonGracePeriod, ff.tempDir,
+		ff.convertTimeout, ff.transcribeTimeout,
+	}
+	for _, entry := range entries {
+		entry.OnChanged = func(string) { schedule() }
+	}
 
-	return container.NewScroll(form)
-}
+	// whisperModel and modelPath are SelectEntry (combobox) rather than
+	// plain Entry, so they cannot live in the loop above. Their OnChanged
+	// behaves the same.
+	ff.whisperModel.OnChanged = func(string) { schedule() }
+	ff.modelPath.OnChanged = func(string) { schedule() }
 
-// buildOutputTab assembles the output settings tab.
-func (w *Window) buildOutputTab(ff *formFields) fyne.CanvasObject {
-	form := widget.NewForm(
-		widget.NewFormItem("Режим вывода", ff.outputMode),
-		widget.NewFormItem("Команда автовставки", ff.autopaste),
-	)
+	selects := []*widget.Select{
+		ff.provider, ff.language, ff.uiLanguage,
+		ff.captureBackend, ff.outputMode, ff.autopaste,
+		ff.hotkeyMode, ff.hotkeyBackend, ff.logLevel,
+		ff.keepAudioFormat,
+	}
+	for _, sel := range selects {
+		sel.OnChanged = func(string) { schedule() }
+	}
 
-	return container.NewScroll(form)
-}
-
-// buildHotkeyTab assembles the hotkey settings tab.
-func (w *Window) buildHotkeyTab(ff *formFields) fyne.CanvasObject {
-	form := widget.NewForm(
-		widget.NewFormItem("Включить встроенный хоткей", ff.hotkeyEnabled),
-		widget.NewFormItem("Клавиша", ff.hotkeyKey),
-		widget.NewFormItem("Модификаторы (через запятую)", ff.hotkeyMods),
-		widget.NewFormItem("Режим", ff.hotkeyMode),
-		widget.NewFormItem("Бэкенд", ff.hotkeyBackend),
-	)
-
-	return container.NewScroll(form)
-}
-
-// buildDaemonTab assembles the daemon settings tab with cards.
-func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
-	ipcForm := widget.NewForm(
-		widget.NewFormItem("Путь к сокету", ff.daemonSocketPath),
-		widget.NewFormItem("Период завершения", ff.daemonGracePeriod),
-	)
-
-	filesForm := widget.NewForm(
-		widget.NewFormItem("Временная директория", ff.tempDir),
-		widget.NewFormItem("Таймаут конвертации", ff.convertTimeout),
-		widget.NewFormItem("Таймаут транскрипции", ff.transcribeTimeout),
-	)
-
-	logForm := widget.NewForm(
-		widget.NewFormItem("Уровень логов", ff.logLevel),
-	)
-
-	content := container.NewVBox(
-		widget.NewCard("IPC", "", ipcForm),
-		widget.NewCard("Рабочие файлы", "", filesForm),
-		widget.NewCard("Логирование", "", logForm),
-	)
-
-	return container.NewScroll(content)
-}
-
-// buildPrivacyTab assembles the privacy settings tab.
-func (w *Window) buildPrivacyTab(ff *formFields) fyne.CanvasObject {
-	form := widget.NewForm(
-		widget.NewFormItem("Логировать транскрипции", ff.logTranscript),
-		widget.NewFormItem("Сохранять аудио", ff.keepAudio),
-	)
-
-	return container.NewScroll(form)
+	checks := []*widget.Check{
+		ff.hotkeyEnabled,
+		ff.whisperAutoDownload, ff.sttRetryEnabled,
+		ff.logTranscript, ff.keepAudio,
+	}
+	for _, chk := range checks {
+		chk.OnChanged = func(bool) { schedule() }
+	}
 }
 
 func (w *Window) buildFields() *formFields {
@@ -318,100 +421,6 @@ func (w *Window) buildFieldWidgets() *formFields {
 	w.buildOutputHotkeyDaemonFieldWidgets(ff)
 
 	return ff
-}
-
-// buildSTTFieldWidgets creates STT-section widgets and returns an initialized formFields.
-func (w *Window) buildSTTFieldWidgets() *formFields {
-	apiKeyEntry := widget.NewEntry()
-	apiKeyEntry.Password = true
-	apiKeyEntry.SetText(w.cfg.CloudAPIKey)
-
-	return &formFields{
-		provider: widget.NewSelect(
-			[]string{
-				config.VoiceProviderGoWhisper,
-				config.VoiceProviderWhisperCpp,
-				config.VoiceProviderCloud,
-			},
-			nil,
-		),
-		language:            entryWithText(w.cfg.Language, "ru"),
-		whisperURL:          entryWithText(w.cfg.GoWhisper.URL, "http://localhost:9081"),
-		whisperPrefix:       entryWithText(w.cfg.GoWhisper.Prefix, "/api/whisper"),
-		whisperModel:        entryWithText(w.cfg.GoWhisper.Model, "ggml-small"),
-		whisperTimeout:      entryWithText(formatDuration(w.cfg.GoWhisper.Timeout), "30s"),
-		whisperAutoDownload: widget.NewCheck("", nil),
-		modelPath:           entryWithText(w.cfg.ModelPath, ""),
-		cloudProvider:       entryWithText(w.cfg.CloudProvider, "openai"),
-		cloudAPIKey:         apiKeyEntry,
-		cloudBaseURL:        entryWithText(w.cfg.CloudBaseURL, ""),
-		sttRetryEnabled:     widget.NewCheck("", nil),
-		sttRetryInitDelay:   entryWithText(formatDuration(w.cfg.STTRetry.InitialDelay), "200ms"),
-		sttRetryMaxDelay:    entryWithText(formatDuration(w.cfg.STTRetry.MaxDelay), "5s"),
-		sttRetryMaxAttempts: entryWithText(intOrEmpty(w.cfg.STTRetry.MaxAttempts), "2"),
-	}
-}
-
-// buildCaptureFieldWidgets fills capture section widgets into ff.
-func (w *Window) buildCaptureFieldWidgets(ff *formFields) {
-	ff.captureBackend = widget.NewSelect(
-		[]string{
-			config.VoiceCaptureBackendAuto,
-			config.VoiceCaptureBackendPipeWire,
-			config.VoiceCaptureBackendPulseAudio,
-		},
-		nil,
-	)
-	ff.captureSampleRate = entryWithText(intOrEmpty(w.cfg.Capture.SampleRate), "16000")
-	ff.captureChannels = entryWithText(intOrEmpty(w.cfg.Capture.Channels), "1")
-	ff.captureMaxDuration = entryWithText(formatDuration(w.cfg.Capture.MaxDuration), "60s")
-}
-
-// buildOutputHotkeyDaemonFieldWidgets fills output, hotkey, daemon and privacy widgets into ff.
-func (w *Window) buildOutputHotkeyDaemonFieldWidgets(ff *formFields) {
-	ff.outputMode = widget.NewSelect(
-		[]string{
-			config.VoiceOutputModeStdout,
-			config.VoiceOutputModeClipboard,
-			config.VoiceOutputModeClipboardAutopaste,
-		},
-		nil,
-	)
-	ff.autopaste = entryWithText(w.cfg.Output.AutopasteCommand, "auto")
-	ff.hotkeyEnabled = widget.NewCheck("", nil)
-	ff.hotkeyKey = entryWithText(w.cfg.Hotkey.Key, "R")
-	ff.hotkeyMods = entryWithText(strings.Join(w.cfg.Hotkey.Modifiers, ","), "super")
-	ff.hotkeyMode = widget.NewSelect(
-		[]string{
-			string(config.VoiceHotkeyModeToggle),
-			string(config.VoiceHotkeyModeHold),
-		},
-		nil,
-	)
-	ff.hotkeyBackend = widget.NewSelect(
-		[]string{
-			string(config.VoiceHotkeyBackendAuto),
-			string(config.VoiceHotkeyBackendX11),
-			string(config.VoiceHotkeyBackendNone),
-		},
-		nil,
-	)
-	ff.daemonSocketPath = entryWithText(w.cfg.Daemon.SocketPath, "")
-	ff.daemonGracePeriod = entryWithText(formatDuration(w.cfg.Daemon.ShutdownGracePeriod), "15s")
-	ff.tempDir = entryWithText(w.cfg.TempDir, "")
-	ff.convertTimeout = entryWithText(formatDuration(w.cfg.ConvertTimeout), "30s")
-	ff.transcribeTimeout = entryWithText(formatDuration(w.cfg.TranscribeTimeout), "60s")
-	ff.logLevel = widget.NewSelect(
-		[]string{
-			config.VoiceLogLevelDebug,
-			config.VoiceLogLevelInfo,
-			config.VoiceLogLevelWarn,
-			config.VoiceLogLevelError,
-		},
-		nil,
-	)
-	ff.logTranscript = widget.NewCheck("", nil)
-	ff.keepAudio = widget.NewCheck("", nil)
 }
 
 // setFieldValues initialises select/check widget states from the current config.
@@ -436,9 +445,17 @@ func (w *Window) setFieldValues(ff *formFields) {
 		logLevel = config.VoiceLogLevelInfo
 	}
 
+	autopaste := w.cfg.Output.AutopasteCommand
+	if autopaste == "" {
+		autopaste = config.VoiceAutopasteCommandAuto
+	}
+
 	ff.provider.SetSelected(w.cfg.Provider)
+	ff.language.SetSelected(sttLanguageOrDefault(w.cfg.Language))
+	ff.uiLanguage.SetSelected(uiLanguageOrDefault(w.cfg.UILanguage))
 	ff.captureBackend.SetSelected(captureBackend)
 	ff.outputMode.SetSelected(w.cfg.Output.Mode)
+	ff.autopaste.SetSelected(autopaste)
 	ff.hotkeyMode.SetSelected(hotkeyMode)
 	ff.hotkeyBackend.SetSelected(hotkeyBackend)
 	ff.logLevel.SetSelected(logLevel)
@@ -447,8 +464,17 @@ func (w *Window) setFieldValues(ff *formFields) {
 	ff.hotkeyEnabled.SetChecked(w.cfg.Hotkey.Enabled)
 	ff.logTranscript.SetChecked(w.cfg.Privacy.LogTranscript)
 	ff.keepAudio.SetChecked(w.cfg.Privacy.KeepAudio)
+
+	keepAudioFormat := w.cfg.Privacy.KeepAudioFormat
+	if keepAudioFormat == "" {
+		keepAudioFormat = config.VoiceKeepAudioFormatWAV
+	}
+
+	ff.keepAudioFormat.SetSelected(keepAudioFormat)
 }
 
+// save reads every form field back into the config and writes the
+// result to disk via persistSave. Called by the debounced auto-saver.
 func (w *Window) save(ff *formFields) {
 	w.applySTTFields(ff)
 	w.applyCaptureFields(ff)
@@ -458,137 +484,27 @@ func (w *Window) save(ff *formFields) {
 
 	w.cfg.Privacy.LogTranscript = ff.logTranscript.Checked
 	w.cfg.Privacy.KeepAudio = ff.keepAudio.Checked
+	w.cfg.Privacy.KeepAudioDir = ff.keepAudioDir.Text
+	w.cfg.Privacy.KeepAudioFormat = ff.keepAudioFormat.Selected
 
 	w.persistSave()
 }
 
-// applySTTFields writes STT-related form values back to the config.
-func (w *Window) applySTTFields(ff *formFields) {
-	w.cfg.Provider = ff.provider.Selected
-	w.cfg.Language = ff.language.Text
-	w.cfg.GoWhisper.URL = ff.whisperURL.Text
-	w.cfg.GoWhisper.Prefix = ff.whisperPrefix.Text
-	w.cfg.GoWhisper.Model = ff.whisperModel.Text
-	w.cfg.GoWhisper.Timeout = parseDuration(ff.whisperTimeout.Text)
-	w.cfg.GoWhisper.AutoDownload = ff.whisperAutoDownload.Checked
-	w.cfg.ModelPath = ff.modelPath.Text
-	w.cfg.CloudProvider = ff.cloudProvider.Text
-	w.cfg.CloudBaseURL = ff.cloudBaseURL.Text
-
-	if ff.cloudAPIKey.Text != "" {
-		w.cfg.CloudAPIKey = ff.cloudAPIKey.Text
-	}
-
-	w.cfg.STTRetry.Enabled = ff.sttRetryEnabled.Checked
-	w.cfg.STTRetry.InitialDelay = parseDuration(ff.sttRetryInitDelay.Text)
-	w.cfg.STTRetry.MaxDelay = parseDuration(ff.sttRetryMaxDelay.Text)
-	w.cfg.STTRetry.MaxAttempts = parseIntEntry(ff.sttRetryMaxAttempts.Text)
-}
-
-// applyCaptureFields writes capture form values back to the config.
-func (w *Window) applyCaptureFields(ff *formFields) {
-	w.cfg.Capture.Backend = ff.captureBackend.Selected
-	w.cfg.Capture.SampleRate = parseIntEntry(ff.captureSampleRate.Text)
-	w.cfg.Capture.Channels = parseIntEntry(ff.captureChannels.Text)
-	w.cfg.Capture.MaxDuration = parseDuration(ff.captureMaxDuration.Text)
-}
-
-// applyOutputFields writes output form values back to the config.
-func (w *Window) applyOutputFields(ff *formFields) {
-	w.cfg.Output.Mode = ff.outputMode.Selected
-	w.cfg.Output.AutopasteCommand = ff.autopaste.Text
-}
-
-// applyHotkeyFields writes hotkey form values back to the config.
-func (w *Window) applyHotkeyFields(ff *formFields) {
-	w.cfg.Hotkey.Enabled = ff.hotkeyEnabled.Checked
-	w.cfg.Hotkey.Key = ff.hotkeyKey.Text
-	w.cfg.Hotkey.Modifiers = splitTrimmed(ff.hotkeyMods.Text)
-	w.cfg.Hotkey.Mode = config.VoiceHotkeyMode(ff.hotkeyMode.Selected)
-	w.cfg.Hotkey.Backend = config.VoiceHotkeyBackend(ff.hotkeyBackend.Selected)
-}
-
-// applyDaemonFields writes daemon form values back to the config.
-func (w *Window) applyDaemonFields(ff *formFields) {
-	w.cfg.Daemon.SocketPath = ff.daemonSocketPath.Text
-	w.cfg.Daemon.ShutdownGracePeriod = parseDuration(ff.daemonGracePeriod.Text)
-	w.cfg.TempDir = ff.tempDir.Text
-	w.cfg.ConvertTimeout = parseDuration(ff.convertTimeout.Text)
-	w.cfg.TranscribeTimeout = parseDuration(ff.transcribeTimeout.Text)
-	w.cfg.LogLevel = ff.logLevel.Selected
-}
-
-// persistSave calls SaveConfig and shows the result dialog.
+// persistSave calls SaveConfig and logs the outcome. Dialog popups were
+// removed when the Save/Cancel buttons gave way to auto-save: a dialog on
+// every successful keystroke would be intolerable, and dialogs on
+// transient parse-in-progress errors (e.g. half-typed durations) would
+// be misleading. Operators watching logs see every save attempt.
 func (w *Window) persistSave() {
 	if err := SaveConfig(w.cfg); err != nil {
-		w.log.Warn("settings: save failed", slog.Any("err", err))
-
-		if w.win != nil {
-			dialog.ShowError(err, w.win)
-		}
+		w.log.Warn("settings: auto-save failed", slog.Any("err", err))
 
 		return
 	}
 
-	w.log.Info("settings: config saved")
+	w.log.Debug("settings: config auto-saved")
 
-	if w.win != nil {
-		const msg = "Настройки сохранены.\nПерезапустите демон чтобы изменения вступили в силу."
-
-		dialog.ShowInformation("Сохранено", msg, w.win)
+	if w.onConfigChanged != nil {
+		w.onConfigChanged()
 	}
-}
-
-func entryWithText(text, placeholder string) *widget.Entry {
-	ee := widget.NewEntry()
-	ee.SetText(text)
-	ee.SetPlaceHolder(placeholder)
-
-	return ee
-}
-
-// formatDuration formats a duration as a string; returns empty string for zero.
-func formatDuration(dd time.Duration) string {
-	if dd == 0 {
-		return ""
-	}
-
-	return dd.String()
-}
-
-// parseDuration parses a duration string; returns zero on empty or parse error.
-func parseDuration(ss string) time.Duration {
-	if ss == "" {
-		return 0
-	}
-
-	dd, err := time.ParseDuration(ss)
-	if err != nil {
-		return 0
-	}
-
-	return dd
-}
-
-// parseIntEntry parses an integer string; returns zero on empty or parse error.
-func parseIntEntry(ss string) int {
-	if ss == "" {
-		return 0
-	}
-
-	nn, err := strconv.Atoi(ss)
-	if err != nil {
-		return 0
-	}
-
-	return nn
-}
-
-// intOrEmpty converts an int to its string representation; returns empty string for zero.
-func intOrEmpty(nn int) string {
-	if nn == 0 {
-		return ""
-	}
-
-	return strconv.Itoa(nn)
 }

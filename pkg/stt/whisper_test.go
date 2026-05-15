@@ -43,6 +43,7 @@ func (s *WhisperSuite) SetupSuite() {
 	s.ctx = context.Background()
 
 	var err error
+
 	s.tempDir, err = os.MkdirTemp("", "whisper-test-*")
 	s.Require().NoError(err)
 
@@ -55,6 +56,7 @@ func (s *WhisperSuite) TearDownSuite() {
 	if s.w != nil {
 		_ = s.w.Close()
 	}
+
 	if s.tempDir != "" {
 		_ = os.RemoveAll(s.tempDir)
 	}
@@ -75,6 +77,7 @@ func (s *WhisperSuite) TestNewWhisperTranscriber_NilLoggerFallsBackToDefault() {
 // TestLoadModel_EmptyPath covers the empty-path guard.
 func (s *WhisperSuite) TestLoadModel_EmptyPath() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
 	w := NewWhisperTranscriber(log)
 	defer func() { _ = w.Close() }()
 
@@ -86,6 +89,7 @@ func (s *WhisperSuite) TestLoadModel_EmptyPath() {
 // TestLoadModel_FileNotFound covers the os.Stat failure branch.
 func (s *WhisperSuite) TestLoadModel_FileNotFound() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
 	w := NewWhisperTranscriber(log)
 	defer func() { _ = w.Close() }()
 
@@ -100,6 +104,7 @@ func (s *WhisperSuite) TestLoadModel_NotAModel() {
 	s.Require().NoError(os.WriteFile(path, []byte("this is definitely not a ggml model"), 0o600))
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
 	w := NewWhisperTranscriber(log)
 	defer func() { _ = w.Close() }()
 
@@ -114,6 +119,7 @@ func (s *WhisperSuite) TestLoadModel_ReplacesExistingModel() {
 	modelPath := os.Getenv(modelPathEnv)
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
 	w := NewWhisperTranscriber(log)
 	defer func() { _ = w.Close() }()
 
@@ -212,6 +218,7 @@ func (s *WhisperSuite) TestTranscribe_NotAWAV() {
 // whisperFullHook test seam (a pure-Go *int that replaces the CGo return code).
 func (s *WhisperSuite) TestTranscribe_WhisperFullError() {
 	code := -1
+
 	whisperFullHook = &code
 	defer func() { whisperFullHook = nil }()
 
@@ -229,6 +236,7 @@ func (s *WhisperSuite) TestTranscribe_AutoLanguage() {
 	if err != nil {
 		s.Require().ErrorIs(err, sttx.ErrEmptyResult)
 	}
+
 	s.T().Logf("auto-detect result: %q", result)
 }
 
@@ -239,6 +247,7 @@ func (s *WhisperSuite) TestTranscribe_EmptyLangFallsBackToAutoDetect() {
 	if err != nil {
 		s.Require().ErrorIs(err, sttx.ErrEmptyResult)
 	}
+
 	s.T().Logf("empty-lang result: %q", result)
 }
 
@@ -290,17 +299,22 @@ func (s *WhisperSuite) TestTranscribe_ContextCanceledWhileWaitingForLock() {
 // Transcribe simultaneously do not race; w.mu serializes whisper_full.
 func (s *WhisperSuite) TestTranscribe_ConcurrentCallsAreSerialized() {
 	const goroutines = 3
+
 	wavPath := s.writeSilenceWAV("concurrent.wav", 0.5)
 
 	errs := make([]error, goroutines)
+
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
+
 	for i := range goroutines {
 		go func(i int) {
 			defer wg.Done()
+
 			_, errs[i] = s.w.Transcribe(s.ctx, wavPath, "ru")
 		}(i)
 	}
+
 	wg.Wait()
 
 	for i, err := range errs {
@@ -334,7 +348,9 @@ func (s *WhisperSuite) TestClose_IdempotentAfterLoad() {
 // writeSilenceWAV writes a pcm_s16le 16kHz mono WAV with durationSec seconds of silence.
 func (s *WhisperSuite) writeSilenceWAV(name string, durationSec float64) string {
 	s.T().Helper()
+
 	numSamples := uint32(float64(16000) * durationSec)
+
 	return s.writeWAVWithFormat(name, 16000, 1, numSamples)
 }
 
@@ -374,6 +390,7 @@ func (s *WhisperSuite) writeTruncatedWAV(name string) string {
 
 	path := filepath.Join(s.tempDir, name)
 	s.Require().NoError(os.WriteFile(path, buf.Bytes(), 0o600))
+
 	return path
 }
 
@@ -408,5 +425,6 @@ func (s *WhisperSuite) writeWAVWithFormat(name string, sampleRate uint32, numCha
 
 	path := filepath.Join(s.tempDir, name)
 	s.Require().NoError(os.WriteFile(path, buf.Bytes(), 0o600))
+
 	return path
 }

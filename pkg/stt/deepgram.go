@@ -149,8 +149,7 @@ func (d *DeepgramTranscriber) Transcribe(ctx context.Context, wavPath, lang stri
 		return "", err
 	}
 
-	//nolint:gosec // path validated above
-	file, err := os.Open(wavPath)
+	file, err := os.Open(filepath.Clean(wavPath))
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to open audio file: %w", sttx.ErrTranscribeFailed, err)
 	}

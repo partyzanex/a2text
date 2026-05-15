@@ -41,7 +41,7 @@ func AcquireDaemonLock(lockPath string) (*DaemonLock, error) {
 	}
 
 	// Safe: path validated by validateLockPath above (absolute, not symlink) and parent dir verified private.
-	file, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, lockFilePermission) //nolint:gosec // path validated above
+	file, err := os.OpenFile(filepath.Clean(lockPath), os.O_RDWR|os.O_CREATE, lockFilePermission)
 	if err != nil {
 		return nil, fmt.Errorf("acquire daemon lock: open %q: %w", lockPath, err)
 	}

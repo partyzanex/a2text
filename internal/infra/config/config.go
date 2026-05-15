@@ -32,6 +32,17 @@ const (
 	tempDirPermission          = 0o700
 	defaultCaptureSampleRate   = 16000
 	defaultDaemonShutdownGrace = 15 * time.Second
+
+	// defaultSilenceThresholdDBFS gates STT on RMS below this dBFS value.
+	// -45 dBFS sits comfortably below conversational speech (-25..-35) and
+	// above quiet ambient noise (-55..-65), so it cuts hallucinated
+	// transcripts on silent recordings without dropping real speech.
+	defaultSilenceThresholdDBFS = -45.0
+
+	// defaultUILanguage is the locale used to render the settings window
+	// and tray when the user has not chosen one. Keep in sync with
+	// internal/i18n.DefaultLanguage.
+	defaultUILanguage = "ru"
 )
 
 // VoiceConfig is the configuration for the cmd/a2text voice CLI.
@@ -40,7 +51,16 @@ const (
 type VoiceConfig struct {
 	// General.
 	Provider string `mapstructure:"provider"`
+
+	// Language is the speech-recognition language hint sent to the STT
+	// backend (e.g. "ru", "en", "auto"). NOT the user-interface locale —
+	// see UILanguage for that.
 	Language string `mapstructure:"language"`
+
+	// UILanguage is the locale used to render the settings window and
+	// tray menu. Falls back to "ru" when empty. Supported values track
+	// internal/i18n/messages/*.toml.
+	UILanguage string `mapstructure:"ui_language"`
 
 	// Local whisper.cpp (used when Provider == VoiceProviderWhisperCpp).
 	ModelPath string `mapstructure:"model_path"`
@@ -86,9 +106,12 @@ type VoiceConfig struct {
 }
 
 // VoiceGoWhisperConfig groups go-whisper HTTP service settings.
+//
+// URL is the full base URL including the API path
+// (e.g. "http://localhost:9081/api/whisper"). The transcriber appends
+// concrete endpoints ("/model", "/transcribe") to this.
 type VoiceGoWhisperConfig struct {
 	URL          string        `mapstructure:"url"`
-	Prefix       string        `mapstructure:"prefix"`
 	Model        string        `mapstructure:"model"`
 	Timeout      time.Duration `mapstructure:"timeout"`
 	AutoDownload bool          `mapstructure:"auto_download"`
@@ -112,6 +135,15 @@ type VoiceCaptureConfig struct {
 	// auto-stops recording after this duration and proceeds to
 	// transcription. Default 60s.
 	MaxDuration time.Duration `mapstructure:"max_duration"`
+
+	// SilenceThresholdDBFS is the RMS level (in decibels relative to full
+	// scale) below which a recording is considered silent and STT is
+	// skipped. Defends against Whisper-family models hallucinating
+	// subtitle-style filler on near-silent audio.
+	//
+	// Negative value (typical: -45.0). Zero disables the gate. Positive
+	// values are rejected by validation as nonsensical.
+	SilenceThresholdDBFS float64 `mapstructure:"silence_threshold_dbfs"`
 }
 
 // VoiceOutputConfig groups text delivery settings.
@@ -281,7 +313,23 @@ var languagePattern = regexp.MustCompile(`^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8})?$`)
 type VoicePrivacyConfig struct {
 	KeepAudio     bool `mapstructure:"keep_audio"`
 	LogTranscript bool `mapstructure:"log_transcript"`
+
+	// KeepAudioDir is the directory archived recordings are copied
+	// (or transcoded) into when KeepAudio is enabled. Empty = leave
+	// the WAV inside the per-session temp directory (legacy behaviour).
+	KeepAudioDir string `mapstructure:"keep_audio_dir"`
+
+	// KeepAudioFormat picks the container/codec used when archiving
+	// kept audio into KeepAudioDir. One of VoiceKeepAudioFormatWAV or
+	// VoiceKeepAudioFormatOGG; empty falls back to wav.
+	KeepAudioFormat string `mapstructure:"keep_audio_format"`
 }
+
+// Recognised values for VoicePrivacyConfig.KeepAudioFormat.
+const (
+	VoiceKeepAudioFormatWAV = "wav"
+	VoiceKeepAudioFormatOGG = "ogg"
+)
 
 // LoadVoice reads, validates, and prepares runtime directories for the voice
 // CLI. Note the third part: this function calls os.MkdirAll on cfg.TempDir,
@@ -310,6 +358,21 @@ func LoadVoice(path string) (*VoiceConfig, error) {
 	// overridden via env vars because the OS shell uses underscores.
 	viperInst.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viperInst.AutomaticEnv()
+
+	// Pre-unmarshal legacy fixup: older configs split the go-whisper API path
+	// into go_whisper.url + go_whisper.prefix. The prefix key is no longer
+	// part of the struct, so without this step the path would be silently
+	// dropped on load and the daemon would hit "/model" instead of
+	// "/api/whisper/model". Read the raw value, splice it into url, and move on.
+	if prefix := strings.TrimSpace(viperInst.GetString("go_whisper.prefix")); prefix != "" {
+		baseURL := strings.TrimRight(viperInst.GetString("go_whisper.url"), "/")
+
+		if !strings.HasPrefix(prefix, "/") {
+			prefix = "/" + prefix
+		}
+
+		viperInst.Set("go_whisper.url", baseURL+prefix)
+	}
 
 	var cfg VoiceConfig
 	if err := viperInst.Unmarshal(&cfg); err != nil {
@@ -399,12 +462,19 @@ func ValidateVoice(cfg *VoiceConfig) error {
 // readVoiceConfig loads the YAML source into viperInst. With an explicit path
 // the file must exist; without one, missing default files are tolerated and
 // an optional config.local overlay is merged on top.
+//
+// After loading, unknown YAML keys are detected and reported as an error to
+// prevent silent misconfiguration from typos in field names.
 func readVoiceConfig(viperInst *viper.Viper, path string) error {
 	if path != "" {
 		viperInst.SetConfigFile(path)
 
 		if err := viperInst.ReadInConfig(); err != nil {
 			return fmt.Errorf("read config file: %w", err)
+		}
+
+		if err := checkUnknownKeys(viperInst); err != nil {
+			return err
 		}
 
 		return nil
@@ -428,6 +498,13 @@ func readVoiceConfig(viperInst *viper.Viper, path string) error {
 		if !errors.As(err, &notFound) {
 			return fmt.Errorf("read config file: %w", err)
 		}
+
+		// No config file found — that's fine, defaults + env vars will be used.
+		return nil
+	}
+
+	if err := checkUnknownKeys(viperInst); err != nil {
+		return err
 	}
 
 	mergeLocalOverride(viperInst, "config.local")
@@ -435,11 +512,98 @@ func readVoiceConfig(viperInst *viper.Viper, path string) error {
 	return nil
 }
 
+// checkUnknownKeys returns an error if viper contains any key that is not
+// in the known set. This catches typos in YAML field names that would
+// otherwise be silently ignored.
+func checkUnknownKeys(v *viper.Viper) error {
+	known := knownConfigKeys()
+
+	var unknown []string
+
+	for _, key := range v.AllKeys() {
+		if !known[key] {
+			unknown = append(unknown, key)
+		}
+	}
+
+	if len(unknown) > 0 {
+		return fmt.Errorf(
+			"unknown config key(s): %s (possible typo in YAML field name)",
+			strings.Join(unknown, ", "),
+		)
+	}
+
+	return nil
+}
+
+// knownConfigKeys returns the set of all recognised config key paths.
+// Keep in sync with VoiceConfig and its nested structs.
+func knownConfigKeys() map[string]bool {
+	return map[string]bool{
+		// General
+		"provider":    true,
+		"language":    true,
+		"ui_language": true,
+		"model_path":  true,
+		// go-whisper
+		"go_whisper":               true,
+		"go_whisper.url":           true,
+		"go_whisper.model":         true,
+		"go_whisper.timeout":       true,
+		"go_whisper.auto_download": true,
+		// cloud
+		"cloud_provider": true,
+		"cloud_api_key":  true,
+		"cloud_base_url": true,
+		// runtime
+		"temp_dir":           true,
+		"convert_timeout":    true,
+		"transcribe_timeout": true,
+		"log_level":          true,
+		// capture
+		"capture":                        true,
+		"capture.backend":                true,
+		"capture.sample_rate":            true,
+		"capture.channels":               true,
+		"capture.max_duration":           true,
+		"capture.silence_threshold_dbfs": true,
+		// output
+		"output":                   true,
+		"output.mode":              true,
+		"output.autopaste_command": true,
+		// Deprecated flat output keys (promoted to output.* in normalizeVoiceConfig)
+		"output_mode":       true,
+		"autopaste_command": true,
+		// daemon
+		"daemon":                       true,
+		"daemon.socket_path":           true,
+		"daemon.shutdown_grace_period": true,
+		// hotkey
+		"hotkey":           true,
+		"hotkey.key":       true,
+		"hotkey.modifiers": true,
+		"hotkey.backend":   true,
+		"hotkey.mode":      true,
+		"hotkey.enabled":   true,
+		// stt_retry
+		"stt_retry":               true,
+		"stt_retry.enabled":       true,
+		"stt_retry.initial_delay": true,
+		"stt_retry.max_delay":     true,
+		"stt_retry.max_attempts":  true,
+		// privacy
+		"privacy":                   true,
+		"privacy.keep_audio":        true,
+		"privacy.log_transcript":    true,
+		"privacy.keep_audio_dir":    true,
+		"privacy.keep_audio_format": true,
+	}
+}
+
 func setVoiceDefaults(viperInst *viper.Viper) {
 	viperInst.SetDefault("provider", VoiceProviderGoWhisper)
 	viperInst.SetDefault("language", "ru")
-	viperInst.SetDefault("go_whisper.url", "http://localhost:9081")
-	viperInst.SetDefault("go_whisper.prefix", "/api/whisper")
+	viperInst.SetDefault("go_whisper.url", "http://localhost:9081/api/whisper")
 	viperInst.SetDefault("go_whisper.model", "ggml-small")
 	viperInst.SetDefault("go_whisper.timeout", "10m")
 	viperInst.SetDefault("go_whisper.auto_download", true)
@@ -450,6 +614,8 @@ func setVoiceDefaults(viperInst *viper.Viper) {
 	viperInst.SetDefault("log_level", VoiceLogLevelInfo)
 	viperInst.SetDefault("privacy.keep_audio", false)
 	viperInst.SetDefault("privacy.log_transcript", false)
+	viperInst.SetDefault("privacy.keep_audio_dir", "")
+	viperInst.SetDefault("privacy.keep_audio_format", VoiceKeepAudioFormatWAV)
 	viperInst.SetDefault("output_mode", VoiceOutputModeClipboard)
 	viperInst.SetDefault("autopaste_command", VoiceAutopasteCommandAuto)
 
@@ -457,6 +623,8 @@ func setVoiceDefaults(viperInst *viper.Viper) {
 	viperInst.SetDefault("capture.backend", VoiceCaptureBackendAuto)
 	viperInst.SetDefault("capture.sample_rate", defaultCaptureSampleRate)
 	viperInst.SetDefault("capture.channels", 1)
+	viperInst.SetDefault("capture.silence_threshold_dbfs", defaultSilenceThresholdDBFS)
+	viperInst.SetDefault("ui_language", defaultUILanguage)
 	// capture.max_duration default is intentionally NOT set here. Zero means
 	// "use the daemon default" — pickMaxRecord() in daemon.go handles it.
 
@@ -498,7 +666,28 @@ func validateVoice(cfg *VoiceConfig) error {
 		return err
 	}
 
+	if err := validateVoicePrivacy(cfg); err != nil {
+		return err
+	}
+
 	return validateVoiceProvider(cfg)
+}
+
+// validateVoicePrivacy verifies the privacy section is internally
+// consistent. KeepAudioFormat must be one of the recognised codecs;
+// KeepAudioDir is accepted as-is (existence is checked at archive time
+// so a temporarily-missing directory does not block daemon startup).
+func validateVoicePrivacy(cfg *VoiceConfig) error {
+	switch cfg.Privacy.KeepAudioFormat {
+	case VoiceKeepAudioFormatWAV, VoiceKeepAudioFormatOGG:
+		return nil
+	}
+
+	return fmt.Errorf(
+		"privacy.keep_audio_format %q is not supported (use %q or %q)",
+		cfg.Privacy.KeepAudioFormat,
+		VoiceKeepAudioFormatWAV, VoiceKeepAudioFormatOGG,
+	)
 }
 
 // validateVoiceProvider dispatches to the provider-specific validation.
@@ -572,6 +761,16 @@ func validateVoiceCapture(cfg *VoiceConfig) error {
 	// pickMaxRecord's silent fallback doesn't hide the error.
 	if cfg.Capture.MaxDuration < 0 {
 		return fmt.Errorf("capture.max_duration must not be negative, got %s", cfg.Capture.MaxDuration)
+	}
+
+	// SilenceThresholdDBFS must be negative (dBFS values for sub-full-scale
+	// audio are negative) or zero (disabled). A positive value is always
+	// wrong: full-scale audio is exactly 0 dBFS, nothing is louder.
+	if cfg.Capture.SilenceThresholdDBFS > 0 {
+		return fmt.Errorf(
+			"capture.silence_threshold_dbfs must be negative or zero, got %.2f",
+			cfg.Capture.SilenceThresholdDBFS,
+		)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(cfg.Capture.Backend)) {
@@ -700,44 +899,15 @@ func validateVoiceGoWhisper(cfg *VoiceConfig) error {
 		return fmt.Errorf("provider %q: %w", cfg.Provider, err)
 	}
 
-	if cfg.GoWhisper.Prefix == "" {
-		return fmt.Errorf("provider %q: go_whisper.prefix is required", cfg.Provider)
-	}
-
-	if err := validateGoWhisperPrefix(cfg.GoWhisper.Prefix); err != nil {
-		return fmt.Errorf("provider %q: %w", cfg.Provider, err)
-	}
-
 	return nil
 }
 
-// validateGoWhisperPrefix rejects path segments that could cause request
-// smuggling or path traversal when concatenated with the base URL.
-func validateGoWhisperPrefix(prefix string) error {
-	if strings.Contains(prefix, "?") {
-		return errors.New("go_whisper.prefix must not contain '?'")
-	}
-
-	if strings.Contains(prefix, "#") {
-		return errors.New("go_whisper.prefix must not contain '#'")
-	}
-
-	if strings.Contains(prefix, "..") {
-		return errors.New("go_whisper.prefix must not contain '..'")
-	}
-
-	if strings.ContainsAny(prefix, " \t\r\n") {
-		return errors.New("go_whisper.prefix must not contain whitespace")
-	}
-
-	return nil
-}
-
-func validateVoiceWhisperCpp(cfg *VoiceConfig) error {
-	if cfg.ModelPath == "" {
-		return fmt.Errorf("provider %q: model_path is required", cfg.Provider)
-	}
-
+func validateVoiceWhisperCpp(_ *VoiceConfig) error {
+	// model_path is intentionally NOT enforced here: users routinely
+	// switch providers in the settings UI before they have downloaded
+	// a model, and refusing to load the config strands them on the
+	// CLI. The whisper.cpp transcriber surfaces a clear "no model"
+	// error at first transcription attempt instead.
 	return nil
 }
 
@@ -791,7 +961,6 @@ func normalizeVoiceConfig(cfg *VoiceConfig) {
 	cfg.Language = strings.TrimSpace(cfg.Language)
 	cfg.ModelPath = strings.TrimSpace(cfg.ModelPath)
 	cfg.GoWhisper.URL = strings.TrimSpace(cfg.GoWhisper.URL)
-	cfg.GoWhisper.Prefix = strings.TrimSpace(cfg.GoWhisper.Prefix)
 	cfg.GoWhisper.Model = strings.TrimSpace(cfg.GoWhisper.Model)
 	cfg.CloudProvider = strings.TrimSpace(cfg.CloudProvider)
 	cfg.CloudAPIKey = strings.TrimSpace(cfg.CloudAPIKey)
@@ -804,12 +973,10 @@ func normalizeVoiceConfig(cfg *VoiceConfig) {
 	cfg.Output.Mode = strings.ToLower(strings.TrimSpace(cfg.Output.Mode))
 	cfg.Output.AutopasteCommand = strings.ToLower(strings.TrimSpace(cfg.Output.AutopasteCommand))
 	cfg.Daemon.SocketPath = strings.TrimSpace(cfg.Daemon.SocketPath)
+	cfg.Privacy.KeepAudioDir = strings.TrimSpace(cfg.Privacy.KeepAudioDir)
+	cfg.Privacy.KeepAudioFormat = strings.ToLower(strings.TrimSpace(cfg.Privacy.KeepAudioFormat))
 
 	applyVoiceConfigDefaults(cfg)
-
-	if cfg.GoWhisper.Prefix != "" && !strings.HasPrefix(cfg.GoWhisper.Prefix, "/") {
-		cfg.GoWhisper.Prefix = "/" + cfg.GoWhisper.Prefix
-	}
 }
 
 // applyVoiceConfigDefaults fills in zero-value fields with safe defaults
@@ -834,6 +1001,10 @@ func applyVoiceConfigDefaults(cfg *VoiceConfig) {
 
 	if cfg.Capture.Backend == "" {
 		cfg.Capture.Backend = VoiceCaptureBackendAuto
+	}
+
+	if cfg.Privacy.KeepAudioFormat == "" {
+		cfg.Privacy.KeepAudioFormat = VoiceKeepAudioFormatWAV
 	}
 
 	if cfg.Capture.SampleRate == 0 {

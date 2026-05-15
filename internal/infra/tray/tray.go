@@ -19,6 +19,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/partyzanex/a2text/internal/domain"
+	"github.com/partyzanex/a2text/internal/i18n"
 )
 
 // Icon geometry and rendering constants.
@@ -147,12 +148,12 @@ func (tr *Tray) Run(ctx context.Context) {
 		systray.SetIcon(tr.iconFor(domain.StateIdle))
 		systray.SetTooltip("a2text: idle")
 
-		mToggle := systray.AddMenuItem("Переключить запись", "Начать или остановить диктовку")
-		mSettings := systray.AddMenuItem("Настройки", "Открыть окно настроек")
+		mToggle := systray.AddMenuItem(i18n.T("tray.toggle"), "")
+		mSettings := systray.AddMenuItem(i18n.T("tray.settings"), "")
 
 		systray.AddSeparator()
 
-		mQuit := systray.AddMenuItem("Выход", "Остановить демон диктовки")
+		mQuit := systray.AddMenuItem(i18n.T("tray.quit"), "")
 
 		go tr.loop(ctx, mToggle, mSettings, mQuit)
 	}, func() {})

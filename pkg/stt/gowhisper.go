@@ -19,16 +19,18 @@ import (
 )
 
 const (
-	goWhisperDefaultPrefix  = "/api/whisper"
 	goWhisperDefaultTimeout = 10 * time.Minute
 )
 
 // GoWhisperConfig groups the fields the GoWhisperTranscriber needs to talk to
 // the go-whisper HTTP service. It is intentionally kept narrow so the adapter
 // does not depend on the full application Config.
+//
+// BaseURL is the full base of the API including any service-specific path
+// segment (e.g. "http://localhost:9081/api/whisper"). The transcriber appends
+// concrete endpoints ("/model", "/transcribe") to it. Trailing slash trimmed.
 type GoWhisperConfig struct {
-	BaseURL      string        // e.g. "http://localhost:8081" — trailing slash trimmed
-	Prefix       string        // API prefix, default "/api/whisper"
+	BaseURL      string
 	Model        string        // initial model id (e.g. "ggml-small"); ".bin" suffix tolerated
 	Timeout      time.Duration // HTTP client timeout, default 10 min
 	AutoDownload bool          // if true, LoadModel will POST /model when missing
@@ -42,21 +44,19 @@ type GoWhisperTranscriber struct {
 	log          *slog.Logger
 	model        string
 	baseURL      string
-	prefix       string
 	mu           sync.RWMutex
 	autoDownload bool
 }
 
 // NewGoWhisperTranscriber wires a transcriber against the go-whisper service.
-// Defaults: Prefix="/api/whisper", Timeout=10min. log defaults to slog.Default().
+// Defaults: Timeout=10min. log defaults to slog.Default().
+//
+// BaseURL is taken verbatim (trailing slash trimmed) and used as the base for
+// every request; the caller is responsible for including any API path segment
+// like "/api/whisper" in it.
 func NewGoWhisperTranscriber(cfg GoWhisperConfig, log *slog.Logger) *GoWhisperTranscriber {
 	if log == nil {
 		log = slog.Default()
-	}
-
-	prefix := cfg.Prefix
-	if prefix == "" {
-		prefix = goWhisperDefaultPrefix
 	}
 
 	timeout := cfg.Timeout
@@ -66,7 +66,6 @@ func NewGoWhisperTranscriber(cfg GoWhisperConfig, log *slog.Logger) *GoWhisperTr
 
 	return &GoWhisperTranscriber{
 		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
-		prefix:       prefix,
 		model:        normalizeModelID(cfg.Model),
 		httpClient:   &http.Client{Timeout: timeout},
 		log:          log,
@@ -387,8 +386,8 @@ func readErrorBody(body io.Reader) string {
 	return strings.TrimSpace(string(b))
 }
 
-func (g *GoWhisperTranscriber) modelURL() string      { return g.baseURL + g.prefix + "/model" }
-func (g *GoWhisperTranscriber) transcribeURL() string { return g.baseURL + g.prefix + "/transcribe" }
+func (g *GoWhisperTranscriber) modelURL() string      { return g.baseURL + "/model" }
+func (g *GoWhisperTranscriber) transcribeURL() string { return g.baseURL + "/transcribe" }
 
 // normalizeModelID strips a directory prefix and the ".bin" suffix from name,
 // so callers can pass either "ggml-small", "ggml-small.bin" or "/data/ggml-small.bin".
@@ -407,7 +406,7 @@ func buildTranscribeBody(audioPath, model, lang string) (body *bytes.Buffer, con
 	}
 
 	// Safe: path validated by validateWavPath above (absolute, not symlink, regular file, .wav extension).
-	file, openErr := os.Open(audioPath) //nolint:gosec // path validated above
+	file, openErr := os.Open(filepath.Clean(audioPath))
 	if openErr != nil {
 		return nil, "", 0, fmt.Errorf("%w: open audio: %w", sttx.ErrTranscribeFailed, openErr)
 	}

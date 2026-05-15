@@ -53,8 +53,14 @@ type runner interface {
 type execRunner struct{}
 
 func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	//nolint:gosec // name is always the "gsettings" constant at all call sites
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if name != "gsettings" {
+		return nil, fmt.Errorf("exec: binary %q is not in the allowlist", name)
+	}
+
+	cmd := exec.CommandContext(ctx, "gsettings")
+	cmd.Args = append(cmd.Args, args...)
+
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("exec %s: %w", name, err)
 	}

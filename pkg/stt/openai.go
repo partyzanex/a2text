@@ -11,11 +11,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/partyzanex/a2text/pkg/sttx"
 )
 
-const langAuto = "auto"
+const (
+	langAuto = "auto"
+
+	// openaiHTTPTimeout is the maximum time for an OpenAI API request.
+	// Transcription of long audio can take minutes, so this is generous.
+	openaiHTTPTimeout = 10 * time.Minute
+)
 
 // OpenAITranscriber sends audio to the OpenAI Whisper API for transcription.
 type OpenAITranscriber struct {
@@ -27,14 +34,14 @@ type OpenAITranscriber struct {
 
 // NewOpenAITranscriber creates an OpenAITranscriber.
 // baseURL defaults to "https://api.openai.com" if empty; pass a test server URL in tests.
-// client defaults to http.DefaultClient if nil.
+// client defaults to an http.Client with a 10-minute timeout if nil.
 func NewOpenAITranscriber(apiKey, baseURL string, client *http.Client, log *slog.Logger) *OpenAITranscriber {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
 
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: openaiHTTPTimeout}
 	}
 
 	if log == nil {
@@ -116,7 +123,7 @@ func (t *OpenAITranscriber) buildBody(wavPath, lang string) (*bytes.Buffer, stri
 	}
 
 	// Safe: path validated by validateWavPath above (absolute, not symlink, regular file, .wav extension).
-	file, err := os.Open(wavPath) //nolint:gosec // path validated above
+	file, err := os.Open(filepath.Clean(wavPath))
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: open wav: %w", sttx.ErrTranscribeFailed, err)
 	}

@@ -28,7 +28,17 @@ type VoiceUseCase struct {
 	recorder    Recorder
 	transcriber Transcriber
 	output      Output
+	archiver    KeptAudioArchiver
 	log         *slog.Logger
+}
+
+// KeptAudioArchiver, when wired, takes a copy (or transcoded version)
+// of the recorded WAV after a successful transcription. Returning
+// quickly is important — Cycle blocks on it before the temp file is
+// removed. Implementations that need to do heavy CPU work should
+// either accept that latency or hand off to a worker themselves.
+type KeptAudioArchiver interface {
+	Archive(ctx context.Context, audioPath string) (savedPath string, err error)
 }
 
 // NewVoiceUseCase wires the dependencies. Recorder, Transcriber, and Output
@@ -52,6 +62,36 @@ func NewVoiceUseCase(
 		output:      output,
 		log:         log,
 	}
+}
+
+// SwapTranscriber atomically replaces the current Transcriber with a
+// new one. Safe to call concurrently with Cycle: a cycle in flight
+// holds the previous transcriber on its goroutine stack and finishes
+// against it; the swap only affects subsequent cycles. The voice use
+// case does not own the previous transcriber's lifecycle — callers
+// are responsible for Close()ing it after the swap.
+//
+// Used by the daemon when the user changes STT-affecting settings in
+// the live UI; pre-existing wiring built the transcriber once at
+// startup, which made provider switches require a restart.
+func (uc *VoiceUseCase) SwapTranscriber(next Transcriber) {
+	if uc == nil || next == nil {
+		return
+	}
+
+	uc.transcriber = next
+}
+
+// AttachArchiver wires (or rewires) the optional kept-audio archiver.
+// Nil disables archiving. Safe to call before Cycle is ever invoked;
+// not safe to call concurrently with Cycle — the daemon constructs the
+// use-case during startup, long before the first event.
+func (uc *VoiceUseCase) AttachArchiver(a KeptAudioArchiver) {
+	if uc == nil {
+		return
+	}
+
+	uc.archiver = a
 }
 
 // Cycle runs one record → transcribe → deliver pass with two contexts:
@@ -94,6 +134,12 @@ func (uc *VoiceUseCase) Cycle(
 	}
 
 	defer func() {
+		// Archive BEFORE removing the temp file. The archiver runs on
+		// the cycle ctx (not recordCtx) so toggling off during STT
+		// does not kill the archive copy; the daemon ctx still does
+		// at shutdown.
+		uc.runArchiver(ctx, audioPath)
+
 		if rmErr := os.Remove(audioPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			uc.log.Warn("voice: temp recording cleanup failed",
 				slog.String("file", filepath.Base(audioPath)),
@@ -107,6 +153,36 @@ func (uc *VoiceUseCase) Cycle(
 	}
 
 	return uc.transcribeAndDeliver(ctx, audioPath, audioSize, lang)
+}
+
+// runArchiver invokes the kept-audio archiver if one is wired,
+// logging — but not propagating — any error. Archival is a privacy
+// nicety; failing it must not affect the user-visible STT result.
+func (uc *VoiceUseCase) runArchiver(ctx context.Context, audioPath string) {
+	if uc.archiver == nil {
+		return
+	}
+
+	savedPath, err := uc.archiver.Archive(ctx, audioPath)
+	if err != nil {
+		uc.log.Warn("voice: kept-audio archive failed",
+			slog.String("source", filepath.Base(audioPath)),
+			slog.Any("err", err),
+		)
+
+		return
+	}
+
+	// Empty savedPath means the archiver short-circuited (KeepAudio is
+	// off). Don't pollute INFO logs with a misleading "archived" entry
+	// in that case — only log when something was actually written.
+	if savedPath == "" {
+		return
+	}
+
+	uc.log.Info("voice: kept-audio archived",
+		slog.String("path", savedPath),
+	)
 }
 
 // transcribeAndDeliver runs the STT call and output delivery for Cycle.

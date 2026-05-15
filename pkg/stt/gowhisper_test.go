@@ -102,7 +102,6 @@ func (s *GoWhisperSuite) TestNew_AppliesDefaults() {
 		Model:   "ggml-small.bin",
 	}, nil)
 	s.Equal("http://localhost:8081", trans.baseURL)
-	s.Equal(goWhisperDefaultPrefix, trans.prefix)
 	s.Equal("ggml-small", trans.model)
 	s.Equal(goWhisperDefaultTimeout, trans.httpClient.Timeout)
 }
@@ -137,7 +136,7 @@ func (s *GoWhisperSuite) TestNormalizeModelID() {
 func (s *GoWhisperSuite) TestTranscribe_Happy_ParsesText() {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.Equal(http.MethodPost, r.Method)
-		s.Equal("/api/whisper/transcribe", r.URL.Path)
+		s.Equal("/transcribe", r.URL.Path)
 		s.NoError(r.ParseMultipartForm(1 << 20))
 		s.Equal("ggml-small", r.FormValue("model"))
 		s.Equal("ru", r.FormValue("language"))
@@ -269,7 +268,7 @@ func (s *GoWhisperSuite) TestTranscribe_FileNotFound_ReturnsTranscribeFailed() {
 func (s *GoWhisperSuite) TestLoadModel_AlreadyPresent_Success() {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.Equal(http.MethodGet, r.Method)
-		s.Equal("/api/whisper/model", r.URL.Path)
+		s.Equal("/model", r.URL.Path)
 		modelList(w, "ggml-small")
 	}))
 	defer srv.Close()

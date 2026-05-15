@@ -64,9 +64,6 @@ func (execPasteRunner) Run(
 
 	// Allowlist permitted autopaste binaries to prevent command injection.
 	bin := filepath.Base(name)
-	if bin != autopasteBackendWtype && bin != autopasteBackendYdotool && bin != autopasteBackendXdotool {
-		return fmt.Errorf("autopaste: command not allowed: %s", bin)
-	}
 
 	// Short-circuit before allocating a timeout context: if the caller is
 	// already cancelled there is no reason to fork a process we'd just kill.
@@ -77,12 +74,21 @@ func (execPasteRunner) Run(
 	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Safe: binary is allowlisted above (wtype or ydotool), args are caller-controlled.
-	cmd := exec.CommandContext(deadlineCtx, name, args...) //nolint:gosec // binary allowlisted
+	var cmd *exec.Cmd
 
-	if filepath.Base(name) == autopasteBackendXdotool {
+	switch bin {
+	case autopasteBackendWtype:
+		cmd = exec.CommandContext(deadlineCtx, autopasteBackendWtype)
+	case autopasteBackendYdotool:
+		cmd = exec.CommandContext(deadlineCtx, autopasteBackendYdotool)
+	case autopasteBackendXdotool:
+		cmd = exec.CommandContext(deadlineCtx, autopasteBackendXdotool)
 		cmd.Env = ensureDisplay(os.Environ())
+	default:
+		return fmt.Errorf("autopaste: command not allowed: %s", bin)
 	}
+
+	cmd.Args = append(cmd.Args, args...)
 
 	var stderr bytes.Buffer
 

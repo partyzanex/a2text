@@ -48,7 +48,7 @@ func SaveConfig(cfg *config.VoiceConfig) error {
 
 	existing := make(map[string]any)
 
-	if raw, readErr := os.ReadFile(path); readErr == nil { //nolint:gosec // trusted: built from os.UserConfigDir
+	if raw, readErr := os.ReadFile(filepath.Clean(path)); readErr == nil {
 		if unmarshalErr := yaml.Unmarshal(raw, &existing); unmarshalErr != nil {
 			existing = make(map[string]any)
 		}
@@ -101,8 +101,10 @@ func applyGoWhisperToMap(dst map[string]any, cfg *config.VoiceConfig) {
 	}
 
 	goWhisper["url"] = cfg.GoWhisper.URL
-	goWhisper["prefix"] = cfg.GoWhisper.Prefix
 	goWhisper["model"] = cfg.GoWhisper.Model
+	// Legacy "prefix" key intentionally not written — it is migrated into
+	// "url" on load. Remove the stale key if a previous version left one.
+	delete(goWhisper, "prefix")
 	goWhisper["timeout"] = cfg.GoWhisper.Timeout.String()
 	goWhisper["auto_download"] = cfg.GoWhisper.AutoDownload
 	dst["go_whisper"] = goWhisper
@@ -143,6 +145,7 @@ func applyCaptureToMap(dst map[string]any, cfg *config.VoiceConfig) {
 	capture["sample_rate"] = cfg.Capture.SampleRate
 	capture["channels"] = cfg.Capture.Channels
 	capture["max_duration"] = cfg.Capture.MaxDuration.String()
+	capture["silence_threshold_dbfs"] = cfg.Capture.SilenceThresholdDBFS
 	dst["capture"] = capture
 }
 

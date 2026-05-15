@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -240,7 +241,7 @@ func (e *EvdevHotkey) Listen(ctx context.Context) error {
 		return ErrEvdevNoDevices
 	}
 
-	defer closeAll(files)
+	defer closeAll(files, e.log)
 
 	e.log.Info("hotkey: evdev: started",
 		slog.Int("devices", len(files)),
@@ -266,7 +267,7 @@ func (e *EvdevHotkey) Listen(ctx context.Context) error {
 
 	cancelReaders()
 	// Closing files unblocks any goroutine blocked in read(2) — see closeAll.
-	closeAll(files)
+	closeAll(files, e.log)
 	wg.Wait()
 
 	return nil
@@ -315,7 +316,12 @@ func (e *EvdevHotkey) readDeviceLoop(ctx context.Context, file *os.File, wg *syn
 
 		code := binary.LittleEndian.Uint16(buf[inputEventCodeOffset:inputEventValueOffset])
 		raw := binary.LittleEndian.Uint32(buf[inputEventValueOffset:inputEventSize])
-		value := int32(raw) //nolint:gosec // wire-format reinterpretation
+
+		if raw > math.MaxInt32 {
+			continue
+		}
+
+		value := int32(raw)
 
 		e.handleKey(ctx, code, value)
 	}
@@ -442,7 +448,7 @@ func openInputDevices(log *slog.Logger) ([]*os.File, error) {
 			continue
 		}
 
-		file, err := os.Open(path) //nolint:gosec // path is a kernel-managed device node
+		file, err := os.Open(filepath.Clean(path))
 		if err != nil {
 			log.Debug("hotkey: evdev: cannot open device",
 				slog.String("path", path),
@@ -466,7 +472,7 @@ func isVirtualDevice(devPath string) bool {
 	base := filepath.Base(devPath)
 	namePath := filepath.Join(sysInputClass, base, "device", "name")
 
-	data, err := os.ReadFile(namePath) //nolint:gosec // sysfs path
+	data, err := os.ReadFile(filepath.Clean(namePath))
 	if err != nil {
 		return false
 	}
@@ -474,12 +480,19 @@ func isVirtualDevice(devPath string) bool {
 	return strings.TrimSpace(string(data)) == virtualUinputDeviceName
 }
 
-// closeAll closes every file. Errors are intentionally ignored: closing an
-// already-closed file or one whose underlying device has been unplugged is
-// expected during shutdown and not actionable.
-func closeAll(files []*os.File) {
+// closeAll closes every file. Close errors are logged at DEBUG rather than
+// surfaced — closing an already-closed file (we call closeAll twice on the
+// happy path: once via defer, once after cancel to unblock readers) or one
+// whose underlying device has been hot-unplugged is expected during
+// shutdown and not actionable for the caller.
+func closeAll(files []*os.File, log *slog.Logger) {
 	for _, file := range files {
-		_ = file.Close() //nolint:errcheck // see godoc
+		if err := file.Close(); err != nil {
+			log.Debug("hotkey: evdev: close device failed",
+				slog.String("path", file.Name()),
+				slog.Any("err", err),
+			)
+		}
 	}
 }
 

@@ -337,7 +337,14 @@ func (s *DepCheckSuite) TestCheckMode_ModeDaemon_WhisperCpp_IncludesFFmpeg() {
 
 // --- whisper-cpp: os.Stat probe for model file ---
 
-func (s *DepCheckSuite) TestCheckMode_WhisperCpp_ModelMissing_NotFound() {
+// TestCheckMode_WhisperCpp_ModelMissing_BootTolerant verifies that a
+// linked whisper-cpp binary with a misconfigured (missing on disk)
+// model_path does NOT block daemon startup. The dep reports Found
+// with a Detail flagging the issue — surfaced in logs — but no
+// missing-dep error is raised. Rationale: the user needs to be able
+// to open the settings window and either fix the path or download a
+// new model; refusing to boot strands them on the CLI.
+func (s *DepCheckSuite) TestCheckMode_WhisperCpp_ModelMissing_BootTolerant() {
 	cfg := baseGoWhisperCfg()
 	cfg.Provider = config.VoiceProviderWhisperCpp
 	cfg.ModelPath = "/models/ggml-small.bin"
@@ -350,7 +357,24 @@ func (s *DepCheckSuite) TestCheckMode_WhisperCpp_ModelMissing_NotFound() {
 	s.Require().NotEmpty(sttDeps)
 
 	names := missingNames(missing)
-	s.Contains(names, "whisper-cpp", "missing model file must make whisper-cpp dep report not-found")
+	s.NotContains(names, "whisper-cpp",
+		"misconfigured model_path must NOT fail-hard depcheck — daemon must still boot so settings can fix it")
+
+	// And the Detail line must communicate the actual problem so the
+	// user (or operator scanning the log) can act on it. Re-run the
+	// Check via the dep's closure — that's how every other test in
+	// this file inspects Detail fields.
+	var sttDetail string
+
+	for _, dep := range sttDeps {
+		if dep.Name == "whisper-cpp" {
+			sttDetail = dep.Check(s.T().Context(), env).Detail
+
+			break
+		}
+	}
+
+	s.Contains(sttDetail, "missing on disk")
 }
 
 func (s *DepCheckSuite) TestCheckMode_WhisperCpp_ModelPresent_Found() {
@@ -524,8 +548,7 @@ func (s *DepCheckSuite) TestCheckMode_GoWhisper_AnyStatusCode_CountsAsReachable(
 
 func (s *DepCheckSuite) TestCheckMode_GoWhisper_ProbesModelEndpoint() {
 	cfg := baseGoWhisperCfg()
-	cfg.GoWhisper.URL = "http://localhost:9081"
-	cfg.GoWhisper.Prefix = "/api/whisper"
+	cfg.GoWhisper.URL = "http://localhost:9081/api/whisper"
 
 	var probed string
 

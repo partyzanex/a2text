@@ -45,7 +45,6 @@ func BuildTranscriber(ctx context.Context, cfg *config.VoiceConfig, log *slog.Lo
 	base, err := factory.Build(ctx, &factory.Config{
 		Provider:              cfg.Provider,
 		GoWhisperURL:          cfg.GoWhisper.URL,
-		GoWhisperPrefix:       cfg.GoWhisper.Prefix,
 		GoWhisperModel:        cfg.GoWhisper.Model,
 		GoWhisperTimeout:      cfg.GoWhisper.Timeout,
 		GoWhisperAutoDownload: cfg.GoWhisper.AutoDownload,

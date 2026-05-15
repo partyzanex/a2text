@@ -43,58 +43,68 @@ const appName = "a2text"
 
 func NewCommand() *cli.Command {
 	return &cli.Command{
-		Name:    appName,
-		Usage:   "voice CLI: file transcription and microphone dictation (one-shot smoke modes)",
-		Version: buildVersion(),
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    FlagConfig,
-				Aliases: []string{"c"},
-				Usage:   "path to config file (default: ./config.yaml or ./app/config.yaml)",
-				Sources: cli.EnvVars("A2TEXT_CONFIG"),
-			},
-			&cli.StringFlag{
-				Name:    FlagFile,
-				Usage:   "transcribe an audio file and print the result to stdout (dev/smoke)",
-				Hidden:  true,
-				Sources: cli.EnvVars("A2TEXT_FILE"),
-			},
-			&cli.DurationFlag{
-				Name:    FlagRecord,
-				Usage:   "record from the default mic for DURATION, transcribe, print to stdout (dev/smoke)",
-				Hidden:  true,
-				Sources: cli.EnvVars("A2TEXT_RECORD"),
-			},
-			&cli.BoolFlag{
-				Name:    FlagDaemon,
-				Usage:   "run as the dictation daemon (used by the systemd unit; fails if another daemon holds the lock)",
-				Sources: cli.EnvVars("A2TEXT_DAEMON"),
-			},
-			&cli.StringFlag{
-				Name:  FlagProvider,
-				Usage: "override stt provider: go-whisper | whisper-cpp | cloud",
-			},
-			&cli.StringFlag{
-				Name: FlagCloudProvider,
-				Usage: "override cloud stt provider: openai | deepgram " +
-					"(requires A2TEXT_CLOUD_API_KEY env var or cloud_api_key in config)",
-			},
-			&cli.StringFlag{
-				Name:  FlagModelPath,
-				Usage: "override path to local whisper model (only with --provider=whisper-cpp)",
-			},
-			&cli.StringFlag{
-				Name:  FlagLanguage,
-				Usage: "override language hint (e.g. ru, en)",
-			},
-			&cli.StringFlag{
-				Name:  FlagLogLevel,
-				Usage: "override log level: debug | info | warn | error",
-			},
+		Name:     appName,
+		Usage:    "voice CLI: file transcription and microphone dictation (one-shot smoke modes)",
+		Version:  buildVersion(),
+		Flags:    rootFlags(),
+		Action:   action,
+		Commands: []*cli.Command{setupCommand()},
+	}
+}
+
+// rootFlags returns the cli.Flag set for the root command. Extracted out
+// of NewCommand so the latter stays under the funlen threshold.
+func rootFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:    FlagConfig,
+			Aliases: []string{"c"},
+			Usage:   "path to config file (default: ./config.yaml or ./app/config.yaml)",
+			Sources: cli.EnvVars("A2TEXT_CONFIG"),
 		},
-		Action: action,
-		Commands: []*cli.Command{
-			setupCommand(),
+		&cli.StringFlag{
+			Name:    FlagFile,
+			Usage:   "transcribe an audio file and print the result to stdout (dev/smoke)",
+			Hidden:  true,
+			Sources: cli.EnvVars("A2TEXT_FILE"),
+		},
+		&cli.DurationFlag{
+			Name:    FlagRecord,
+			Usage:   "record from the default mic for DURATION, transcribe, print to stdout (dev/smoke)",
+			Hidden:  true,
+			Sources: cli.EnvVars("A2TEXT_RECORD"),
+		},
+		&cli.BoolFlag{
+			Name:    FlagDaemon,
+			Usage:   "run as the dictation daemon (used by the systemd unit; fails if another daemon holds the lock)",
+			Sources: cli.EnvVars("A2TEXT_DAEMON"),
+		},
+		&cli.StringFlag{
+			Name:  FlagProvider,
+			Usage: "override stt provider: go-whisper | whisper-cpp | cloud",
+		},
+		&cli.StringFlag{
+			Name: FlagCloudProvider,
+			Usage: "override cloud stt provider: openai | deepgram " +
+				"(requires A2TEXT_CLOUD_API_KEY env var or cloud_api_key in config)",
+		},
+		&cli.StringFlag{
+			Name:  FlagModelPath,
+			Usage: "override path to local whisper model (only with --provider=whisper-cpp)",
+		},
+		&cli.StringFlag{
+			Name:  FlagLanguage,
+			Usage: "override language hint (e.g. ru, en)",
+		},
+		&cli.StringFlag{
+			Name:  FlagLogLevel,
+			Usage: "override log level: debug | info | warn | error",
+		},
+		&cli.StringFlag{
+			Name: FlagPprof,
+			Usage: "enable pprof endpoint on host:port (e.g. 127.0.0.1:6060); " +
+				"empty = disabled. Loopback only unless you really mean to expose it.",
+			Sources: cli.EnvVars("A2TEXT_PPROF"),
 		},
 	}
 }
@@ -162,6 +172,10 @@ func action(ctx context.Context, cmd *cli.Command) error {
 	defer stop()
 
 	logger := CreateLogger(cfg.LogLevel)
+
+	if err := startPprof(signalCtx, cmd.String(FlagPprof), logger); err != nil {
+		return cli.Exit(fmt.Errorf("pprof: %w", err), 1)
+	}
 
 	return dispatchMode(signalCtx, cfg, logger, filePath, recordDuration, daemonMode)
 }

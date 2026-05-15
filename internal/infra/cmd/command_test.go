@@ -98,6 +98,7 @@ func (s *CommandSuite) TestNewCommand_NoUnexpectedFlags() {
 		FlagModelPath,
 		FlagLanguage,
 		FlagLogLevel,
+		FlagPprof,
 	}
 
 	for _, f := range cmd.Flags {

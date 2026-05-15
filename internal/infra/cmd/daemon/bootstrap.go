@@ -13,6 +13,7 @@ import (
 
 	"github.com/partyzanex/a2text/internal/adapters/ipc"
 	"github.com/partyzanex/a2text/internal/domain"
+	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/cmd/factory"
 	"github.com/partyzanex/a2text/internal/infra/cmd/setup"
 	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
@@ -68,6 +69,12 @@ func RunBootstrap(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger
 	}
 
 	_ = stdout // reserved for future operator-visible output; currently unused in daemon-only mode
+
+	// Initialise i18n before any UI surface (tray, settings) reads strings.
+	// A bad language code is non-fatal: i18n falls back to the default locale.
+	if err := i18n.Init(cfg.UILanguage); err != nil {
+		log.Warn("bootstrap: i18n init failed; using fallbacks", slog.Any("err", err))
+	}
 
 	if err := sysd.EnsureRuntimeDir(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
@@ -233,10 +240,7 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 
 	CleanOrphanDirs(cfg.TempDir, log)
 
-	transcriber, err := factory.BuildTranscriber(ctx, cfg, log)
-	if err != nil {
-		return fmt.Errorf("daemon: build transcriber: %w", err)
-	}
+	transcriber := buildTranscriberOrLazyStub(ctx, cfg, log)
 
 	var ownedByDaemon bool
 
@@ -302,12 +306,47 @@ func registerHotkey(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logg
 	}
 }
 
+// buildTranscriberOrLazyStub builds the STT transcriber and falls back
+// to a lazy-error stub when construction fails. Keeping the fallback
+// out of runDaemon keeps that function under the funlen budget; the
+// fail-soft policy itself is documented inline below.
+func buildTranscriberOrLazyStub(
+	ctx context.Context,
+	cfg *config.VoiceConfig,
+	log *slog.Logger,
+) transcribe.Transcriber {
+	transcriber, err := factory.BuildTranscriber(ctx, cfg, log)
+	if err == nil {
+		return transcriber
+	}
+
+	// Fail-soft: a misconfigured STT must not strand the user on the
+	// CLI. Log the construction error and substitute a stub that
+	// surfaces the same error on every transcribe attempt. The
+	// settings window stays reachable so the user can fix model_path
+	// / URL / API key and restart the daemon.
+	log.Error("voice: STT init failed; running with lazy-error transcriber",
+		slog.String("provider", cfg.Provider),
+		slog.Any("err", err),
+	)
+
+	return factory.NewLazyErrorTranscriber(err)
+}
+
 // attachTray wires the settings window and system-tray icon to the daemon.
 func attachTray(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, daemon *Daemon, stop func()) {
 	settingsWin := settings.New(cfg, log)
+	settingsWin.SetRootContext(ctx)
+	settingsWin.SetOnConfigChanged(func() { daemon.ReloadConfig(ctx) })
+
+	// settingsWin.Show is invoked via a Fyne tray callback (nullary
+	// signature) and threads daemon-scoped ctx through SetRootContext
+	// rather than as a function parameter — invisible to contextcheck.
+	showSettings := func() { settingsWin.Show() } //nolint:contextcheck // see comment above
+
 	trayInst := tray.New(log,
 		func() { daemon.Toggle(ctx) },
-		func() { settingsWin.Show() },
+		showSettings,
 		stop,
 	)
 	daemon.AttachTray(trayInst)
@@ -323,13 +362,28 @@ func buildDaemon(
 	recorder voice.Recorder,
 	voiceOutput voice.Output,
 ) (*Daemon, bool) {
+	// Apply the silence-gate decorator on top of the STT chain. Keeps the
+	// underlying transcriber as Closer (Close() lives on the rich type)
+	// while exposing only the slim voice.Transcriber surface to the cycle.
+	gatedTranscriber := factory.WrapWithSilenceGate(
+		transcriber, cfg.Capture.SilenceThresholdDBFS, log,
+	)
+
+	// Kept-audio archiver: reads Privacy flags from cfg at every cycle
+	// so toggling "Сохранять аудио" in the settings UI takes effect on
+	// the next recording without a daemon restart. Uses the convert
+	// timeout as the per-encode cap — the WAV is tiny so even a
+	// pessimistic ffmpeg run finishes well inside it.
+	keptArchiver := factory.NewKeptAudioArchiver(cfg, cfg.ConvertTimeout, log)
+
 	daemon := NewDaemon(&DaemonDeps{
 		Cfg:         cfg,
 		Log:         log,
 		Recorder:    recorder,
-		Transcriber: transcriber,
+		Transcriber: gatedTranscriber,
 		Closer:      transcriber,
 		Output:      voiceOutput,
+		Archiver:    keptArchiver,
 	})
 
 	return daemon, true

@@ -1,5 +1,3 @@
-//go:build !linux || !x11
-
 package factory
 
 import (

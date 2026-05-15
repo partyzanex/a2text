@@ -42,4 +42,13 @@ const (
 	// entry point for systemd units (where auto-toggle would cause the
 	// service to immediately exit if a daemon was already running).
 	FlagDaemon = "daemon"
+
+	// FlagPprof enables the standard net/http/pprof endpoints on the given
+	// host:port address (e.g. "127.0.0.1:6060"). Empty / unset = disabled.
+	// Useful for diagnosing memory growth across many voice cycles:
+	//   go tool pprof -http=:9999 http://127.0.0.1:6060/debug/pprof/heap
+	//
+	// Bind to loopback unless you really mean to expose it — pprof gives
+	// arbitrary stack and heap inspection to whoever can connect.
+	FlagPprof = "pprof"
 )

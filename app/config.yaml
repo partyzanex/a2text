@@ -2,8 +2,10 @@ provider: "go-whisper"
 language: "ru"
 
 go_whisper:
-  url: "http://localhost:9081"
-  prefix: "/api/whisper"
+  # URL includes the full API base path. The legacy `prefix` field is
+  # still accepted on load and merged into `url` for backward compatibility,
+  # but new configs should leave it out.
+  url: "http://localhost:9081/api/whisper"
   model: "ggml-large-v3-turbo"
   timeout: "10m"
   auto_download: true
