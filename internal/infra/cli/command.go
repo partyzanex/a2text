@@ -17,8 +17,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/partyzanex/a2text/internal/infra/cmd/daemon"
-	"github.com/partyzanex/a2text/internal/infra/cmd/setup"
+	"github.com/partyzanex/a2text/internal/infra/daemon"
+	"github.com/partyzanex/a2text/internal/infra/setup"
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 

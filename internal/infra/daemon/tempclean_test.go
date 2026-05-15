@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	daemon "github.com/partyzanex/a2text/internal/infra/cmd/daemon"
+	daemon "github.com/partyzanex/a2text/internal/infra/daemon"
 )
 
 type TempCleanSuite struct {

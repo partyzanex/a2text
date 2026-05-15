@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	factory "github.com/partyzanex/a2text/internal/infra/cmd/factory"
+	factory "github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
+	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 

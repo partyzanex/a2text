@@ -51,8 +51,10 @@ vendor/
 # Tools
 .serena/
 .claude/
+.claude-octopus/
 .codex
 .qwen/
+.agents/
 
 # graphify: keep human-readable reports, ignore derived artifacts
 .graphify/*
@@ -61,3 +63,4 @@ graphify-out/
 
 # Local DB
 a2text.db*
+skills-lock.json

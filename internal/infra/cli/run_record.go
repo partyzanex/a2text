@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/partyzanex/a2text/internal/domain"
-	"github.com/partyzanex/a2text/internal/infra/cmd/daemon"
-	"github.com/partyzanex/a2text/internal/infra/cmd/depcheck"
-	"github.com/partyzanex/a2text/internal/infra/cmd/factory"
+	"github.com/partyzanex/a2text/internal/infra/daemon"
+	"github.com/partyzanex/a2text/internal/infra/depcheck"
+	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/internal/usecases/voice"

@@ -1,10 +1,3 @@
-// Package factory centralises STT adapter construction. Both the bot/API
-// command and the voice CLI delegate to Build, which dispatches on Provider
-// and applies provider-specific tuning from Config.
-//
-// Converter wiring is NOT in this package: the two consumers use incompatible
-// Converter interfaces (transcribe.Converter vs voice.Converter), so each
-// cmd package retains its own BuildConverter.
 package factory
 
 import (

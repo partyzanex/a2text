@@ -66,15 +66,16 @@ func startPprof(ctx context.Context, addr string, log *slog.Logger) error {
 		}
 	}()
 
-	// Create a detached shutdown context before the goroutine so gosec does
-	// not flag context.Background() inside it. ctx is already cancelled by
-	// the time the goroutine runs, so passing ctx to Shutdown would
-	// force-abort connections instead of letting them drain gracefully.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), pprofShutdownTimeout)
-	defer shutdownCancel()
-
 	go func() {
 		<-ctx.Done()
+
+		// Detached shutdown context: ctx is already cancelled at this point,
+		// passing it to Shutdown would force-abort connections instead of
+		// letting them drain gracefully. WithoutCancel preserves any values
+		// while detaching from the cancellation chain.
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.WithoutCancel(ctx), pprofShutdownTimeout)
+		defer shutdownCancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Debug("pprof: shutdown returned error", slog.Any("err", err))

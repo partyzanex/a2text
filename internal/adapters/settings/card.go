@@ -12,7 +12,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/partyzanex/a2text/internal/i18n"
-	"github.com/partyzanex/a2text/internal/ui"
+	"github.com/partyzanex/a2text/internal/adapters/ui"
 )
 
 // rowsCard wraps a sequence of formRow containers in a visual card: a

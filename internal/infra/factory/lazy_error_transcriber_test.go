@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/partyzanex/a2text/internal/infra/cmd/factory"
+	"github.com/partyzanex/a2text/internal/infra/factory"
 )
 
 func TestLazyErrorTranscriber_AllMethodsReturnCause(t *testing.T) {

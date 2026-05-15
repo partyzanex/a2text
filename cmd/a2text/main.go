@@ -9,7 +9,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	cmd "github.com/partyzanex/a2text/internal/infra/cmd"
+	cmd "github.com/partyzanex/a2text/internal/infra/cli"
 )
 
 func main() {

@@ -562,6 +562,8 @@ func knownConfigKeys() map[string]bool {
 		"language":    true,
 		"ui_language": true,
 		"model_path":  true,
+		// whisper.cpp
+		"whisper_cpp_models_dir": true,
 		// go-whisper
 		"go_whisper":               true,
 		"go_whisper.url":           true,

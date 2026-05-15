@@ -99,7 +99,7 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 	apiKeyEntry.Password = true
 	apiKeyEntry.SetText(w.cfg.CloudAPIKey)
 
-	return &formFields{
+	ff := &formFields{
 		provider: widget.NewSelect(
 			[]string{
 				config.VoiceProviderGoWhisper,
@@ -130,6 +130,28 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 		whisperCheckBtn:     widget.NewButton(i18n.T("button.check_connection"), nil),
 		whisperCheckStatus:  newStatusText(),
 	}
+
+	// Wire whisperCppModel selection → modelPath so dropdown choice is saved.
+	ff.whisperCppModel.OnChanged = func(name string) {
+		if name == "" {
+			return
+		}
+
+		dir := strings.TrimSpace(ff.whisperCppModelsDir.Text)
+		if dir == "" {
+			dir = whisperCppModelsDir()
+		}
+
+		if dir == "" {
+			ff.modelPath.SetText(name)
+
+			return
+		}
+
+		ff.modelPath.SetText(filepath.Join(dir, name))
+	}
+
+	return ff
 }
 
 // applySTTFields writes STT-related form values back to the config.

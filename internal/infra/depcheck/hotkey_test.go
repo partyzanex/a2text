@@ -1,7 +1,7 @@
 package depcheck_test
 
 import (
-	"github.com/partyzanex/a2text/internal/infra/cmd/depcheck"
+	"github.com/partyzanex/a2text/internal/infra/depcheck"
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 

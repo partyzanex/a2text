@@ -16,7 +16,7 @@ import (
 	"github.com/partyzanex/a2text/assets"
 	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/ui"
+	"github.com/partyzanex/a2text/internal/adapters/ui"
 )
 
 const (

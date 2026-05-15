@@ -10,7 +10,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/partyzanex/a2text/internal/ui"
+	"github.com/partyzanex/a2text/internal/adapters/ui"
 )
 
 // helpIconSize is the visual diameter of the rendered help glyph. Kept

@@ -7,8 +7,8 @@ import (
 
 // Version and Commit are set at build time via -ldflags:
 //
-//	go build -ldflags "-X github.com/partyzanex/a2text/internal/infra/cmd.Version=v2.0.0
-//	  -X github.com/partyzanex/a2text/internal/infra/cmd.Commit=abc1234"
+//	go build -ldflags "-X github.com/partyzanex/a2text/internal/infra/cli.Version=v2.0.0
+//	  -X github.com/partyzanex/a2text/internal/infra/cli.Commit=abc1234"
 //
 //nolint:gochecknoglobals // set via ldflags at build time
 var (

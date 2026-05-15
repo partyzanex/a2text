@@ -10,8 +10,8 @@ import (
 
 	"github.com/partyzanex/a2text/internal/adapters/output"
 	"github.com/partyzanex/a2text/internal/domain"
-	"github.com/partyzanex/a2text/internal/infra/cmd/daemon"
-	"github.com/partyzanex/a2text/internal/infra/cmd/factory"
+	"github.com/partyzanex/a2text/internal/infra/daemon"
+	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )

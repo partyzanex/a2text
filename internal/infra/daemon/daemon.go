@@ -13,11 +13,11 @@ import (
 
 	"github.com/partyzanex/a2text/internal/adapters/ipc"
 	"github.com/partyzanex/a2text/internal/domain"
-	"github.com/partyzanex/a2text/internal/infra/cmd/factory"
-	"github.com/partyzanex/a2text/internal/infra/cmd/setup"
-	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
+	"github.com/partyzanex/a2text/internal/infra/factory"
+	"github.com/partyzanex/a2text/internal/infra/setup"
+	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/infra/tray"
+	"github.com/partyzanex/a2text/internal/adapters/tray"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
 

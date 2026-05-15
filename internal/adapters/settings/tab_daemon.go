@@ -15,8 +15,8 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/partyzanex/a2text/internal/i18n"
-	"github.com/partyzanex/a2text/internal/infra/cmd/sysd"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/sysd"
 )
 
 // buildDaemonTab assembles the "Демон" tab: IPC, working-files,
@@ -223,10 +223,28 @@ func (w *Window) applyDaemonFields(ff *formFields) {
 	w.cfg.LogLevel = ff.logLevel.Selected
 }
 
+// sanitizeDialogPath returns currentPath when safe to pass to a folder dialog,
+// or the user's home directory as a safe fallback. Rejects values starting
+// with "-" so they cannot be interpreted as flags by zenity/kdialog.
+func sanitizeDialogPath(currentPath string) string {
+	trimmed := strings.TrimSpace(currentPath)
+	if trimmed == "" || strings.HasPrefix(trimmed, "-") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+
+		return "/"
+	}
+
+	return trimmed
+}
+
 func tryZenity(currentPath string) (string, error) {
-	//nolint:gosec // path is passed as argument, not through shell
+	path := sanitizeDialogPath(currentPath)
+
+	//nolint:gosec // path is sanitized via sanitizeDialogPath (rejects leading "-")
 	cmd := exec.CommandContext(context.Background(), "zenity",
-		"--file-selection", "--directory", "--filename="+currentPath)
+		"--file-selection", "--directory", "--filename="+path)
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -237,8 +255,10 @@ func tryZenity(currentPath string) (string, error) {
 }
 
 func tryKdialog(currentPath string) (string, error) {
-	//nolint:gosec // path is passed as argument, not through shell
-	cmd := exec.CommandContext(context.Background(), "kdialog", "--getexistingdirectory", currentPath)
+	path := sanitizeDialogPath(currentPath)
+
+	//nolint:gosec // path is sanitized via sanitizeDialogPath (rejects leading "-")
+	cmd := exec.CommandContext(context.Background(), "kdialog", "--getexistingdirectory", path)
 
 	output, err := cmd.Output()
 	if err != nil {

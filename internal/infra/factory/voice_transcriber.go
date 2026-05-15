@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 	"github.com/partyzanex/a2text/pkg/audio"
@@ -42,7 +41,7 @@ func BuildTranscriber(ctx context.Context, cfg *config.VoiceConfig, log *slog.Lo
 		log = slog.New(slog.DiscardHandler)
 	}
 
-	base, err := factory.Build(ctx, &factory.Config{
+	base, err := Build(ctx, &Config{
 		Provider:              cfg.Provider,
 		GoWhisperURL:          cfg.GoWhisper.URL,
 		GoWhisperModel:        cfg.GoWhisper.Model,
