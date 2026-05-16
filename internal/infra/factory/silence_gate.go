@@ -3,10 +3,12 @@ package factory
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 	"github.com/partyzanex/a2text/pkg/audio"
+	"github.com/partyzanex/a2text/pkg/stt"
 )
 
 // silenceGate decorates a voice.Transcriber to short-circuit STT calls
@@ -46,7 +48,39 @@ func WrapWithSilenceGate(inner voice.Transcriber, thresholdDBFS float64, log *sl
 		)
 	}
 
+	// Preserve streaming capability through the gate. Otherwise the
+	// daemon's reload path (which always wraps with the gate) would
+	// strip the Stream method from a streaming-capable inner, and the
+	// voice use-case would silently fall back to the file-based cycle.
+	// The RMS check requires a WAV file and is therefore inapplicable
+	// to live PCM — Stream simply passes through to inner.
+	if streamer, ok := inner.(stt.StreamCapable); ok {
+		return &streamingSilenceGate{silenceGate: gate, streamer: streamer}
+	}
+
 	return gate
+}
+
+// streamingSilenceGate adds a Stream pass-through to silenceGate so the
+// method set survives the type assertion in voice.streamingCapableTranscriber.
+// The silence-skip behaviour applies only to the file-based Transcribe
+// path; live streaming bypasses the RMS check (no WAV to measure).
+type streamingSilenceGate struct {
+	*silenceGate
+
+	streamer stt.StreamCapable
+}
+
+// Stream forwards to the streaming inner without an RMS check.
+func (g *streamingSilenceGate) Stream(
+	ctx context.Context, pcm io.Reader, lang string,
+) (string, error) {
+	text, err := g.streamer.Stream(ctx, pcm, lang)
+	if err != nil {
+		return text, fmt.Errorf("silence gate: stream: %w", err)
+	}
+
+	return text, nil
 }
 
 // newSilenceGate constructs the decorator. A nil inner Transcriber is a

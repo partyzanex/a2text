@@ -18,15 +18,16 @@ import (
 const (
 	VoiceProviderGoWhisper  = "go-whisper"
 	VoiceProviderWhisperCpp = "whisper-cpp"
-	VoiceProviderCloud      = "cloud"
+	VoiceProviderOpenAI     = "openai"
+	VoiceProviderDeepgram   = "deepgram"
 )
 
-// Cloud STT providers — values accepted in VoiceConfig.CloudProvider when
-// VoiceConfig.Provider == VoiceProviderCloud.
-const (
-	VoiceCloudProviderOpenAI   = "openai"
-	VoiceCloudProviderDeepgram = "deepgram"
-)
+// legacyVoiceProviderDeepgramStream is the pre-merge provider id. The
+// settings UI used to expose deepgram and deepgram-stream as two
+// providers; they are now one provider with a Streaming bool. Loaders
+// rewrite this value to VoiceProviderDeepgram + Deepgram.Streaming=true
+// so old configs keep working without manual editing.
+const legacyVoiceProviderDeepgramStream = "deepgram-stream"
 
 const (
 	tempDirPermission          = 0o700
@@ -72,13 +73,13 @@ type VoiceConfig struct {
 	// Provider == VoiceProviderGoWhisper).
 	GoWhisper VoiceGoWhisperConfig `mapstructure:"go_whisper"`
 
-	// Cloud STT (used when Provider == VoiceProviderCloud).
-	CloudProvider string `mapstructure:"cloud_provider"`
-	// CloudAPIKey is a secret. Prefer supplying it via A2TEXT_CLOUD_API_KEY
-	// env var rather than committing to a YAML file. Never log VoiceConfig
-	// with %+v — this field would leak.
-	CloudAPIKey  string `mapstructure:"cloud_api_key"`
-	CloudBaseURL string `mapstructure:"cloud_base_url"`
+	// OpenAI groups OpenAI cloud STT settings (used when
+	// Provider == VoiceProviderOpenAI).
+	OpenAI VoiceOpenAIConfig `mapstructure:"openai"`
+
+	// Deepgram groups Deepgram cloud STT settings (used when
+	// Provider == VoiceProviderDeepgram).
+	Deepgram VoiceDeepgramConfig `mapstructure:"deepgram"`
 
 	// Working files / runtime.
 	TempDir           string        `mapstructure:"temp_dir"`
@@ -118,6 +119,34 @@ type VoiceGoWhisperConfig struct {
 	Model        string        `mapstructure:"model"`
 	Timeout      time.Duration `mapstructure:"timeout"`
 	AutoDownload bool          `mapstructure:"auto_download"`
+}
+
+// VoiceOpenAIConfig groups OpenAI Whisper API settings.
+type VoiceOpenAIConfig struct {
+	// APIKey is a secret. Prefer supplying it via A2TEXT_OPENAI_API_KEY
+	// env var rather than committing to a YAML file. Never log VoiceConfig
+	// with %+v — this field would leak.
+	APIKey string `mapstructure:"api_key"`
+	// BaseURL overrides the default endpoint (https://api.openai.com).
+	BaseURL string `mapstructure:"base_url"`
+	// Model is the OpenAI model id (e.g. "whisper-1").
+	Model string `mapstructure:"model"`
+}
+
+// VoiceDeepgramConfig groups Deepgram /v1/listen settings.
+type VoiceDeepgramConfig struct {
+	// APIKey is a secret. Prefer supplying it via A2TEXT_DEEPGRAM_API_KEY env var.
+	APIKey string `mapstructure:"api_key"`
+	// BaseURL overrides the default endpoint (https://api.deepgram.com/v1/listen).
+	BaseURL string `mapstructure:"base_url"`
+	// Model is the Deepgram model id (e.g. "nova-2", "nova-3-general").
+	Model string `mapstructure:"model"`
+	// Streaming switches the adapter from one-shot upload (REST /v1/listen)
+	// to live WebSocket streaming. When true, the recorder feeds raw PCM
+	// to Deepgram concurrently with capture and finals arrive incrementally
+	// — lower perceived latency. When false, the audio file is uploaded
+	// after recording stops.
+	Streaming bool `mapstructure:"streaming"`
 }
 
 // VoiceCaptureConfig groups audio capture settings.
@@ -356,13 +385,15 @@ const (
 // Discovery order:
 //   - explicit path, if non-empty (no local overlay applied);
 //   - $XDG_CONFIG_HOME/a2text/config.yaml (or ~/.config/a2text/config.yaml);
-//   - ./config.yaml or ./app/config.yaml (development fallback),
-//     then optional ./config.local.yaml (or ./app/config.local.yaml) overlay.
+//   - ./config.yaml (development fallback), then optional
+//     ./config.local.yaml overlay.
 //
 // Env vars use the A2TEXT_ prefix and underscore-flattened key paths,
 // e.g. A2TEXT_PROVIDER, A2TEXT_LANGUAGE, A2TEXT_PRIVACY_KEEP_AUDIO,
 // A2TEXT_GO_WHISPER_TIMEOUT.
 func LoadVoice(path string) (*VoiceConfig, error) {
+	bootstrapUserConfig(path)
+
 	viperInst := viper.New()
 	setVoiceDefaults(viperInst)
 
@@ -473,7 +504,25 @@ func ValidateVoice(cfg *VoiceConfig) error {
 		return errors.New("voice config is nil")
 	}
 
+	MigrateLegacyVoiceProvider(cfg)
+
 	return validateVoice(cfg)
+}
+
+// MigrateLegacyVoiceProvider rewrites pre-merge provider ids into the
+// current shape. "deepgram-stream" was a separate provider; it is now
+// "deepgram" with Streaming=true. Idempotent: re-running on already-
+// migrated configs is a no-op. Exposed so settings UI / CLI flag
+// handling can normalise user input through the same path.
+func MigrateLegacyVoiceProvider(cfg *VoiceConfig) {
+	if cfg == nil {
+		return
+	}
+
+	if cfg.Provider == legacyVoiceProviderDeepgramStream {
+		cfg.Provider = VoiceProviderDeepgram
+		cfg.Deepgram.Streaming = true
+	}
 }
 
 // readVoiceConfig loads the YAML source into viperInst. With an explicit path
@@ -500,15 +549,14 @@ func readVoiceConfig(viperInst *viper.Viper, path string) error {
 	viperInst.SetConfigName("config")
 	viperInst.SetConfigType("yaml")
 
-	// User config dir (~/.config/a2text/) has the highest priority so that
-	// the installed binary always reads the user's config, not whatever
-	// ./app/config.yaml happens to be present in the working directory.
+	// User config dir (~/.config/a2text/ on Linux, OS-equivalent
+	// elsewhere) has the highest priority. The binary writes a default
+	// here on first launch via EnsureUserConfig.
 	if xdgDir, err := os.UserConfigDir(); err == nil {
 		viperInst.AddConfigPath(filepath.Join(xdgDir, "a2text"))
 	}
 
 	viperInst.AddConfigPath(".")
-	viperInst.AddConfigPath("./app")
 
 	if err := viperInst.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
@@ -570,10 +618,17 @@ func knownConfigKeys() map[string]bool {
 		"go_whisper.model":         true,
 		"go_whisper.timeout":       true,
 		"go_whisper.auto_download": true,
-		// cloud
-		"cloud_provider": true,
-		"cloud_api_key":  true,
-		"cloud_base_url": true,
+		// openai
+		"openai":          true,
+		"openai.api_key":  true,
+		"openai.base_url": true,
+		"openai.model":    true,
+		// deepgram
+		"deepgram":           true,
+		"deepgram.api_key":   true,
+		"deepgram.base_url":  true,
+		"deepgram.model":     true,
+		"deepgram.streaming": true,
 		// runtime
 		"temp_dir":           true,
 		"convert_timeout":    true,
@@ -719,13 +774,16 @@ func validateVoiceProvider(cfg *VoiceConfig) error {
 		return validateVoiceGoWhisper(cfg)
 	case VoiceProviderWhisperCpp:
 		return validateVoiceWhisperCpp(cfg)
-	case VoiceProviderCloud:
-		return validateVoiceCloud(cfg)
+	case VoiceProviderOpenAI:
+		return validateVoiceOpenAI(cfg)
+	case VoiceProviderDeepgram:
+		return validateVoiceDeepgram(cfg)
 	default:
 		return fmt.Errorf(
-			"unknown provider %q (supported: %s, %s, %s)",
+			"unknown provider %q (supported: %s, %s, %s, %s)",
 			cfg.Provider,
-			VoiceProviderGoWhisper, VoiceProviderWhisperCpp, VoiceProviderCloud,
+			VoiceProviderGoWhisper, VoiceProviderWhisperCpp,
+			VoiceProviderOpenAI, VoiceProviderDeepgram,
 		)
 	}
 }
@@ -933,26 +991,27 @@ func validateVoiceWhisperCpp(_ *VoiceConfig) error {
 	return nil
 }
 
-func validateVoiceCloud(cfg *VoiceConfig) error {
-	switch cfg.CloudProvider {
-	case "":
-		return fmt.Errorf("provider %q: cloud_provider is required", cfg.Provider)
-	case VoiceCloudProviderOpenAI, VoiceCloudProviderDeepgram:
-		// ok
-	default:
-		return fmt.Errorf(
-			"provider %q: unknown cloud_provider %q (supported: %s, %s)",
-			cfg.Provider, cfg.CloudProvider,
-			VoiceCloudProviderOpenAI, VoiceCloudProviderDeepgram,
-		)
+func validateVoiceOpenAI(cfg *VoiceConfig) error {
+	if cfg.OpenAI.APIKey == "" {
+		return fmt.Errorf("provider %q: openai.api_key is required", cfg.Provider)
 	}
 
-	if cfg.CloudAPIKey == "" {
-		return fmt.Errorf("provider %q: cloud_api_key is required", cfg.Provider)
+	if cfg.OpenAI.BaseURL != "" {
+		if err := validateHTTPURL("openai.base_url", cfg.OpenAI.BaseURL); err != nil {
+			return fmt.Errorf("provider %q: %w", cfg.Provider, err)
+		}
 	}
 
-	if cfg.CloudBaseURL != "" {
-		if err := validateHTTPURL("cloud_base_url", cfg.CloudBaseURL); err != nil {
+	return nil
+}
+
+func validateVoiceDeepgram(cfg *VoiceConfig) error {
+	if cfg.Deepgram.APIKey == "" {
+		return fmt.Errorf("provider %q: deepgram.api_key is required", cfg.Provider)
+	}
+
+	if cfg.Deepgram.BaseURL != "" {
+		if err := validateHTTPURL("deepgram.base_url", cfg.Deepgram.BaseURL); err != nil {
 			return fmt.Errorf("provider %q: %w", cfg.Provider, err)
 		}
 	}
@@ -984,9 +1043,12 @@ func normalizeVoiceConfig(cfg *VoiceConfig) {
 	cfg.ModelPath = strings.TrimSpace(cfg.ModelPath)
 	cfg.GoWhisper.URL = strings.TrimSpace(cfg.GoWhisper.URL)
 	cfg.GoWhisper.Model = strings.TrimSpace(cfg.GoWhisper.Model)
-	cfg.CloudProvider = strings.TrimSpace(cfg.CloudProvider)
-	cfg.CloudAPIKey = strings.TrimSpace(cfg.CloudAPIKey)
-	cfg.CloudBaseURL = strings.TrimSpace(cfg.CloudBaseURL)
+	cfg.OpenAI.APIKey = strings.TrimSpace(cfg.OpenAI.APIKey)
+	cfg.OpenAI.BaseURL = strings.TrimSpace(cfg.OpenAI.BaseURL)
+	cfg.OpenAI.Model = strings.TrimSpace(cfg.OpenAI.Model)
+	cfg.Deepgram.APIKey = strings.TrimSpace(cfg.Deepgram.APIKey)
+	cfg.Deepgram.BaseURL = strings.TrimSpace(cfg.Deepgram.BaseURL)
+	cfg.Deepgram.Model = strings.TrimSpace(cfg.Deepgram.Model)
 	cfg.TempDir = strings.TrimSpace(cfg.TempDir)
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 
@@ -1080,7 +1142,6 @@ func mergeLocalOverride(viperInst *viper.Viper, name string) {
 	local.SetConfigName(name)
 	local.SetConfigType("yaml")
 	local.AddConfigPath(".")
-	local.AddConfigPath("./app")
 
 	if err := local.ReadInConfig(); err != nil {
 		return

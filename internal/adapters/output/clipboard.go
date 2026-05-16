@@ -10,7 +10,7 @@ import (
 // clipboard adapters. Defined here (consumer side) so output doesn't
 // import internal/adapters/clipboard — wiring connects them.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=output -destination=clipboard_mocks_test.go -source=clipboard.go ClipboardCopier
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=output -destination=clipboard_mocks_test.go -source=clipboard.go ClipboardCopier
 type ClipboardCopier interface {
 	Copy(ctx context.Context, text string) error
 }

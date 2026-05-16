@@ -2,7 +2,7 @@ package voice
 
 import "github.com/partyzanex/a2text/pkg/hotkey"
 
-//go:generate go run go.uber.org/mock/mockgen@latest -package=voice -destination=voice_mocks_test.go -source=hotkey.go
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=voice -destination=voice_mocks_test.go -source=hotkey.go
 
 // Voice-facing aliases for the hotkey library types. The contract
 // (consumer-owns-the-interface) is satisfied because pkg/hotkey is a

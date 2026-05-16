@@ -12,7 +12,7 @@ import (
 	"github.com/partyzanex/a2text/pkg/clipboard"
 )
 
-//go:generate go run go.uber.org/mock/mockgen@latest -package=factory -destination=output_builder_mocks_test.go -source=output_builder.go
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=factory -destination=output_builder_mocks_test.go -source=output_builder.go
 
 // SessionClipboard is the minimal interface the daemon needs from a clipboard
 // backend. Defined here (consumer side) — adapters/clipboard exposes concrete

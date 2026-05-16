@@ -11,8 +11,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/adapters/ui"
+	"github.com/partyzanex/a2text/internal/i18n"
 )
 
 // rowsCard wraps a sequence of formRow containers in a visual card: a
@@ -120,20 +120,21 @@ func cardIconFor(title string) fyne.Resource {
 // language active at first call.
 func cardIconTable() map[string]fyne.Resource {
 	return map[string]fyne.Resource{
-		i18n.T("card.general"):       theme.SettingsIcon(),
-		i18n.T("card.go_whisper"):    theme.MediaPlayIcon(),
-		i18n.T("card.whisper_cpp"):   theme.FolderOpenIcon(),
-		i18n.T("card.cloud"):         theme.StorageIcon(),
-		i18n.T("card.stt_retry"):     theme.ViewRefreshIcon(),
-		i18n.T("card.capture_audio"): theme.VolumeUpIcon(),
+		i18n.T(i18n.KeyCardGeneral):      theme.SettingsIcon(),
+		i18n.T(i18n.KeyCardGoWhisper):    theme.MediaPlayIcon(),
+		i18n.T(i18n.KeyCardWhisperCpp):   theme.FolderOpenIcon(),
+		i18n.T(i18n.KeyCardOpenai):       theme.StorageIcon(),
+		i18n.T(i18n.KeyCardDeepgram):     theme.StorageIcon(),
+		i18n.T(i18n.KeyCardSttRetry):     theme.ViewRefreshIcon(),
+		i18n.T(i18n.KeyCardCaptureAudio): theme.VolumeUpIcon(),
 		// Fyne does not ship a KeyboardIcon; ComputerIcon is the
 		// closest semantic match for a system-wide global hotkey.
-		i18n.T("card.hotkey"):  theme.ComputerIcon(),
-		i18n.T("card.output"):  theme.ContentPasteIcon(),
-		i18n.T("card.ipc"):     theme.ComputerIcon(),
-		i18n.T("card.files"):   theme.FolderIcon(),
-		i18n.T("card.logging"): theme.DocumentIcon(),
-		i18n.T("card.privacy"): theme.VisibilityOffIcon(),
+		i18n.T(i18n.KeyCardHotkey):  theme.ComputerIcon(),
+		i18n.T(i18n.KeyCardOutput):  theme.ContentPasteIcon(),
+		i18n.T(i18n.KeyCardIpc):     theme.ComputerIcon(),
+		i18n.T(i18n.KeyCardFiles):   theme.FolderIcon(),
+		i18n.T(i18n.KeyCardLogging): theme.DocumentIcon(),
+		i18n.T(i18n.KeyCardPrivacy): theme.VisibilityOffIcon(),
 	}
 }
 

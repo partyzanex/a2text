@@ -20,7 +20,8 @@ type (
 	Recorder      = capture.Recorder
 )
 
-//go:generate go run go.uber.org/mock/mockgen@latest -source=interfaces.go -destination=interfaces_mocks_test.go -package=voice
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -source=interfaces.go -destination=interfaces_mocks_test.go -package=voice
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=voice -destination=recorder_mocks_test.go github.com/partyzanex/a2text/pkg/capture Recorder
 
 // Transcriber turns an audio file (already prepared by Converter) into text.
 //

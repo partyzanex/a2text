@@ -12,12 +12,12 @@ import (
 	"github.com/partyzanex/shutdown"
 
 	"github.com/partyzanex/a2text/internal/adapters/ipc"
+	"github.com/partyzanex/a2text/internal/adapters/tray"
 	"github.com/partyzanex/a2text/internal/domain"
+	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/setup"
 	"github.com/partyzanex/a2text/internal/infra/sysd"
-	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/adapters/tray"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
 
@@ -816,4 +816,4 @@ func makeNotifyListener(sdListener domain.TransitionListener, ch chan domain.Sta
 	}
 }
 
-//go:generate go run go.uber.org/mock/mockgen@latest -package=cmd -destination=daemon_mocks_test.go -source=daemon.go transcribeCloser
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=daemon -destination=daemon_mocks_test.go -source=daemon.go transcribeCloser

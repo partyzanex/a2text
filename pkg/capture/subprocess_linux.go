@@ -32,7 +32,7 @@ import (
 //   - returns nil on a clean exit (including SIGINT-induced clean exit
 //     when WAV header was finalised — caller validates the file).
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=capture -destination=subprocess_linux_mocks_test.go -source=subprocess_linux.go CommandRunner
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=capture -destination=subprocess_linux_mocks_test.go -source=subprocess_linux.go CommandRunner
 type CommandRunner interface {
 	LookPath(name string) (string, error)
 	Run(

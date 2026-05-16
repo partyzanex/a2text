@@ -30,7 +30,7 @@ type Snapshot struct {
 // process — wl-paste/xclip launch their own subprocess so isolation is
 // implicit.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=clipboard -destination=reader_mocks_test.go -source=types.go ClipboardReader
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=clipboard -destination=reader_mocks_test.go -source=types.go ClipboardReader
 type ClipboardReader interface {
 	Snapshot(ctx context.Context) (Snapshot, error)
 }

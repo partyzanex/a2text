@@ -12,9 +12,15 @@ go_whisper:
 
 model_path: ""
 
-cloud_provider: ""
-cloud_api_key: ""
-cloud_base_url: ""
+openai:
+  api_key: ""
+  base_url: ""
+  model: "whisper-1"
+
+deepgram:
+  api_key: ""
+  base_url: ""
+  model: "nova-2"
 
 temp_dir: ""
 convert_timeout: "60s"

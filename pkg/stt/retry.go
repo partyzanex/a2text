@@ -180,6 +180,51 @@ func (r *RetryingTranscriber) Close() error {
 	return nil
 }
 
+// StreamCapable is the structural interface a streaming-aware inner
+// transcriber must satisfy. Exported so the factory layer can dispatch
+// retry-with-Stream vs retry-without-Stream without importing
+// usecases/voice (which would invert the dependency direction).
+type StreamCapable interface {
+	Stream(ctx context.Context, pcm io.Reader, lang string) (string, error)
+}
+
+// RetryingStreamingTranscriber bundles RetryingTranscriber with a Stream
+// pass-through. It is constructed by NewRetryingStreamingTranscriber when
+// inner is StreamCapable so the method set of the wrapper matches that of
+// inner — without this, Go's structural typing would lose the streaming
+// capability the moment a streaming transcriber is wrapped for retry.
+type RetryingStreamingTranscriber struct {
+	*RetryingTranscriber
+
+	streamer StreamCapable
+}
+
+// NewRetryingStreamingTranscriber wraps a streaming inner with retry. The
+// stream pass-through is intentionally NOT retried at this layer — the
+// WebSocket lifecycle is owned by the streamer and a retry here would
+// double-open the connection. Only the file-based Transcribe path uses
+// the retry loop.
+func NewRetryingStreamingTranscriber(
+	inner StreamCapable, asBackend STTBackend, cfg RetryConfig, log *slog.Logger,
+) *RetryingStreamingTranscriber {
+	return &RetryingStreamingTranscriber{
+		RetryingTranscriber: NewRetryingTranscriber(asBackend, cfg, log),
+		streamer:            inner,
+	}
+}
+
+// Stream forwards to the streaming inner without retry.
+func (r *RetryingStreamingTranscriber) Stream(
+	ctx context.Context, pcm io.Reader, lang string,
+) (string, error) {
+	text, err := r.streamer.Stream(ctx, pcm, lang)
+	if err != nil {
+		return text, fmt.Errorf("stream: %w", err)
+	}
+
+	return text, nil
+}
+
 // nextBackoff doubles the delay, clamped to maxDelay. A zero maxDelay leaves
 // the delay unchanged — the constructor enforces that callers with
 // MaxAttempts > 2 supply a maxDelay, so unbounded growth is prevented.

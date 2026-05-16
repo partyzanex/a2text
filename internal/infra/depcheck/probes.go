@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"syscall"
 	"unicode/utf8"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
@@ -204,8 +209,10 @@ func sttDeps(cfg *config.VoiceConfig, withConversion bool) []Dependency {
 	switch cfg.Provider {
 	case config.VoiceProviderGoWhisper:
 		return goWhisperDeps(cfg)
-	case config.VoiceProviderCloud:
-		return cloudDeps(cfg)
+	case config.VoiceProviderOpenAI:
+		return openAIDeps(cfg)
+	case config.VoiceProviderDeepgram:
+		return deepgramDeps(cfg)
 	case config.VoiceProviderWhisperCpp:
 		return whisperCppDeps(cfg, withConversion)
 	default:
@@ -250,38 +257,44 @@ func goWhisperDeps(cfg *config.VoiceConfig) []Dependency {
 	}}
 }
 
-// cloudDeps builds the cloud STT dependency entry.
-// Contract: cfg must not be nil.
-func cloudDeps(cfg *config.VoiceConfig) []Dependency {
+// openAIDeps builds the OpenAI Whisper cloud-provider dependency entry.
+func openAIDeps(cfg *config.VoiceConfig) []Dependency {
 	if cfg == nil {
 		return []Dependency{nilConfigDep()}
 	}
 
-	found := cfg.CloudProvider != "" && cfg.CloudAPIKey != ""
-	tip := ""
-
-	if !found {
-		tip = "set cloud_provider and A2TEXT_CLOUD_API_KEY env var"
-	}
-
 	return []Dependency{{
-		Name:        "cloud",
+		Name:        config.VoiceProviderOpenAI,
 		Group:       GroupSTT,
-		InstallHint: tip,
+		InstallHint: "set openai.api_key (or A2TEXT_OPENAI_API_KEY env var)",
 		RequiredFor: sttRequiredFor,
-		Check: func(_ context.Context, env Env) CheckResult {
-			if cfg.CloudProvider == "" || cfg.CloudAPIKey == "" {
+		Check: func(_ context.Context, _ Env) CheckResult {
+			if cfg.OpenAI.APIKey == "" {
 				return CheckResult{}
 			}
 
-			// Only surface known enum values in Detail — an unknown provider string
-			// from a malformed config could contain tokens or garbage.
-			switch cfg.CloudProvider {
-			case config.VoiceCloudProviderOpenAI, config.VoiceCloudProviderDeepgram:
-				return CheckResult{Found: true, Detail: cfg.CloudProvider}
-			default:
-				return CheckResult{Found: true, Detail: "cloud"}
+			return CheckResult{Found: true, Detail: config.VoiceProviderOpenAI}
+		},
+	}}
+}
+
+// deepgramDeps builds the Deepgram cloud-provider dependency entry.
+func deepgramDeps(cfg *config.VoiceConfig) []Dependency {
+	if cfg == nil {
+		return []Dependency{nilConfigDep()}
+	}
+
+	return []Dependency{{
+		Name:        config.VoiceProviderDeepgram,
+		Group:       GroupSTT,
+		InstallHint: "set deepgram.api_key (or A2TEXT_DEEPGRAM_API_KEY env var)",
+		RequiredFor: sttRequiredFor,
+		Check: func(_ context.Context, _ Env) CheckResult {
+			if cfg.Deepgram.APIKey == "" {
+				return CheckResult{}
 			}
+
+			return CheckResult{Found: true, Detail: config.VoiceProviderDeepgram}
 		},
 	}}
 }
@@ -348,10 +361,11 @@ func unknownProviderDep(provider string) []Dependency {
 		Name:  label,
 		Group: GroupSTT,
 		InstallHint: fmt.Sprintf(
-			"set provider to one of: %s, %s, %s",
+			"set provider to one of: %s, %s, %s, %s",
 			config.VoiceProviderGoWhisper,
-			config.VoiceProviderCloud,
 			config.VoiceProviderWhisperCpp,
+			config.VoiceProviderOpenAI,
+			config.VoiceProviderDeepgram,
 		),
 		RequiredFor: sttRequiredFor,
 		Check:       func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
@@ -441,17 +455,76 @@ func autopasteDeps(cfg *config.VoiceConfig) []Dependency {
 }
 
 // uinputAutopasteDep returns a dependency for the persistent Go uinput backend.
-// No binary is required; /dev/uinput access is the only prerequisite.
+// Verifies /dev/uinput exists, is writable, and (on Linux) the current user
+// is in the `input` group — the most common cause of silent autopaste
+// failure on Wayland.
 func uinputAutopasteDep() Dependency {
 	return Dependency{
 		Name:        config.VoiceAutopasteCommandUinput,
 		Group:       GroupAutopaste,
 		RequiredFor: "Wayland/X11 key injection via persistent uinput virtual keyboard",
-		InstallHint: "ensure /dev/uinput is writable: sudo setfacl -m u:$USER:rw /dev/uinput",
-		Check: func(_ context.Context, _ Env) CheckResult {
-			return CheckResult{Found: true, Detail: "Go uinput (no binary required)"}
+		InstallHint: "add user to input group (sudo usermod -aG input $USER) and re-login, " +
+			"or grant per-user ACL: sudo setfacl -m u:$USER:rw /dev/uinput",
+		Check: func(_ context.Context, env Env) CheckResult {
+			return checkUinputAccess(env)
 		},
 	}
+}
+
+// checkUinputAccess inspects /dev/uinput accessibility and user group
+// membership. Returns a CheckResult with a human-readable Detail describing
+// the first blocker, or Found=true when everything passes.
+func checkUinputAccess(env Env) CheckResult {
+	const path = "/dev/uinput"
+
+	if _, err := env.StatFile(path); err != nil {
+		return CheckResult{Detail: path + " missing — kernel uinput module not loaded?"}
+	}
+
+	if err := syscall.Access(path, unix.W_OK); err != nil {
+		groups, gerr := userGroupNames()
+		if gerr != nil {
+			return CheckResult{Detail: path + " not writable; group lookup failed: " + gerr.Error()}
+		}
+
+		if !slices.Contains(groups, "input") {
+			return CheckResult{
+				Detail: path + " not writable; user not in 'input' group (groups: " +
+					strings.Join(groups, ",") + ")",
+			}
+		}
+
+		return CheckResult{Detail: path + " not writable for current user"}
+	}
+
+	return CheckResult{Found: true, Detail: path + " writable"}
+}
+
+// userGroupNames returns the supplementary group names of the current user.
+// Empty slice on any error; depcheck never fails because group lookup fails.
+func userGroupNames() ([]string, error) {
+	usr, err := user.Current()
+	if err != nil {
+		return nil, fmt.Errorf("depcheck: lookup current user: %w", err)
+	}
+
+	gids, err := usr.GroupIds()
+	if err != nil {
+		return nil, fmt.Errorf("depcheck: lookup group ids: %w", err)
+	}
+
+	names := make([]string, 0, len(gids))
+
+	for _, gid := range gids {
+		grp, err := user.LookupGroupId(gid)
+		if err != nil {
+			continue
+		}
+
+		names = append(names, grp.Name)
+	}
+
+	return names, nil
 }
 
 // autoAutopasteDep returns the dependency for the "auto" autopaste backend

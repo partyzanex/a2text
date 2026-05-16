@@ -44,7 +44,6 @@ func (s *CommandSuite) TestNewCommand_FlagSchema() {
 		{name: FlagConfig, aliases: []string{"c"}, hidden: false, envVars: []string{"A2TEXT_CONFIG"}},
 		{name: FlagFile, hidden: true, envVars: []string{"A2TEXT_FILE"}},
 		{name: FlagProvider, hidden: false},
-		{name: FlagCloudProvider, hidden: false},
 		{name: FlagModelPath, hidden: false},
 		{name: FlagLanguage, hidden: false},
 		{name: FlagLogLevel, hidden: false},
@@ -94,7 +93,6 @@ func (s *CommandSuite) TestNewCommand_NoUnexpectedFlags() {
 		FlagRecord,
 		FlagDaemon,
 		FlagProvider,
-		FlagCloudProvider,
 		FlagModelPath,
 		FlagLanguage,
 		FlagLogLevel,
@@ -146,17 +144,17 @@ func singleFlagCases() []overrideCase {
 			},
 		},
 		{
-			name: "provider override",
-			args: []string{"a2text", "--provider", "cloud"},
+			name: "provider override openai",
+			args: []string{"a2text", "--provider", "openai"},
 			expectCfg: func(s *CommandSuite, cfg *config.VoiceConfig) {
-				s.Equal("cloud", cfg.Provider)
+				s.Equal("openai", cfg.Provider)
 			},
 		},
 		{
-			name: "cloud-provider override",
-			args: []string{"a2text", "--cloud-provider", "openai"},
+			name: "provider override deepgram",
+			args: []string{"a2text", "--provider", "deepgram"},
 			expectCfg: func(s *CommandSuite, cfg *config.VoiceConfig) {
-				s.Equal("openai", cfg.CloudProvider)
+				s.Equal("deepgram", cfg.Provider)
 			},
 		},
 		{
@@ -196,14 +194,12 @@ func multiFlagCases() []overrideCase {
 			name: "multiple overrides combine",
 			args: []string{
 				"a2text",
-				"--provider", "cloud",
-				"--cloud-provider", "deepgram",
+				"--provider", "deepgram",
 				"--lang", "en",
 				"--log-level", "warn",
 			},
 			expectCfg: func(s *CommandSuite, cfg *config.VoiceConfig) {
-				s.Equal("cloud", cfg.Provider)
-				s.Equal("deepgram", cfg.CloudProvider)
+				s.Equal("deepgram", cfg.Provider)
 				s.Equal("en", cfg.Language)
 				s.Equal("warn", cfg.LogLevel)
 			},
@@ -390,8 +386,7 @@ func (s *CommandSuite) TestAction_CloudOverrideWithoutAPIKey_FailsValidation() {
 
 	err := NewCommand().Run(context.Background(), []string{
 		"a2text", "--config", cfgPath,
-		"--provider", "cloud",
-		"--cloud-provider", "openai",
+		"--provider", "openai",
 	})
 
 	s.Require().Error(err)

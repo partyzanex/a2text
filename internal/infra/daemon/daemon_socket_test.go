@@ -21,8 +21,8 @@ import (
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
 
-//go:generate go run go.uber.org/mock/mockgen@latest -package=cmd -destination=voice_socket_mocks_test.go github.com/partyzanex/a2text/internal/usecases/voice Recorder,Transcriber,Output
-//go:generate go run go.uber.org/mock/mockgen@latest -package=daemon -destination=hotkey_mocks_test.go github.com/partyzanex/a2text/internal/usecases/voice HotkeyListener
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=daemon -destination=voice_socket_mocks_test.go github.com/partyzanex/a2text/internal/usecases/voice Recorder,Transcriber,Output
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=daemon -destination=hotkey_mocks_test.go github.com/partyzanex/a2text/internal/usecases/voice HotkeyListener
 
 // e2e timeouts. Centralised so a slow CI box can be tuned in one place.
 const (

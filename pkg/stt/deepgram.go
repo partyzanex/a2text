@@ -241,6 +241,14 @@ func (d *DeepgramTranscriber) executeRequest(req *http.Request, wavPath, lang st
 		return "", fmt.Errorf("%w: failed to read response: %w", sttx.ErrTranscribeFailed, err)
 	}
 
+	// Surface the raw response at debug so users can see exactly what
+	// Deepgram returned — useful for diagnosing schema drift, partial
+	// transcripts, or unexpected fields without rerunning with curl.
+	d.log.Debug("deepgram response",
+		slog.Int("status", resp.StatusCode),
+		slog.String("body", string(respBody)),
+	)
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf(
 			"%w: Deepgram API returned status %d: %s",

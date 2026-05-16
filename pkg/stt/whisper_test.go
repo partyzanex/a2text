@@ -216,8 +216,8 @@ func (s *WhisperSuite) TestTranscribe_NotAWAV() {
 func (s *WhisperSuite) TestTranscribe_WhisperFullError() {
 	code := -1
 
-	SetWhisperFullHook(&code)
-	defer SetWhisperFullHook(nil)
+	s.w.SetWhisperFullHook(&code)
+	defer s.w.SetWhisperFullHook(nil)
 
 	_, err := s.w.Transcribe(context.Background(), s.writeSilenceWAV("whisper-fail.wav", 0.5), "ru")
 	s.Require().Error(err)

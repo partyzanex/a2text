@@ -14,9 +14,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/partyzanex/a2text/assets"
+	"github.com/partyzanex/a2text/internal/adapters/ui"
 	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/adapters/ui"
 )
 
 const (
@@ -165,7 +165,35 @@ func (w *Window) Run() {
 		stub.Hide()
 	})
 
-	fyneApp.Run() // blocks until Quit() is called
+	// Fyne v2.7.4 has a sporadic nil-canvas crash inside Select.showPopUp
+	// → NewPopUpMenu → overlayRenderer.MinSize when a Select widget is
+	// clicked after the window content has been re-laid (provider-card
+	// toggle, settings reload). Daemon must survive AND UI must keep
+	// running — so we wrap Run() in a self-healing loop: catch the
+	// panic, drop the dead window so the next tray click rebuilds it
+	// from scratch, and restart the event loop. A small backoff cap
+	// avoids tight-looping if the crash repeats.
+	const (
+		maxFyneRestarts = 8
+		fyneRestartCool = 500 * time.Millisecond
+	)
+
+	for restart := 0; ; restart++ {
+		crashed := w.runFyneOnce(fyneApp)
+		if !crashed {
+			return
+		}
+
+		if restart >= maxFyneRestarts {
+			w.log.Error("settings: too many Fyne event-loop panics, giving up on UI",
+				slog.Int("restarts", restart),
+				slog.String("hint", "voice cycles unaffected; restart daemon to recover UI"))
+
+			return
+		}
+
+		time.Sleep(fyneRestartCool)
+	}
 }
 
 // Stop quits the Fyne event loop, causing Run() to return.
@@ -203,7 +231,7 @@ func (w *Window) Show() {
 			w.log.Warn("settings: i18n init failed, falling back to defaults", slog.Any("err", err))
 		}
 
-		w.win = w.app.NewWindow(i18n.T("window.title"))
+		w.win = w.app.NewWindow("a2text")
 		w.win.Resize(fyne.NewSize(windowWidth, windowHeight))
 		w.win.SetFixedSize(false)
 		w.win.SetContent(w.buildContent())
@@ -219,6 +247,32 @@ func (w *Window) Show() {
 		})
 		w.win.Show()
 	})
+}
+
+// runFyneOnce runs the Fyne event loop once with panic recovery and
+// returns true if the loop ended with a panic (caller should restart),
+// false if it returned normally (caller should exit). The recovered
+// panic is logged before returning; the dead window pointer is cleared
+// so the next Show() recreates the content from scratch instead of
+// trying to revive corrupt widget refs.
+func (w *Window) runFyneOnce(fyneApp fyne.App) (crashed bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			crashed = true
+
+			w.log.Error("settings: Fyne event loop panicked, restarting UI",
+				slog.Any("panic", r))
+
+			// Drop refs to the dead canvas. Next Show() rebuilds via
+			// app.NewWindow + buildContent → fresh widget tree.
+			w.win = nil
+			w.saver = nil
+		}
+	}()
+
+	fyneApp.Run() // blocks until Quit() is called or until a panic propagates
+
+	return false
 }
 
 // rootCtx returns the stored root context or context.Background() as fallback.
@@ -253,10 +307,18 @@ type formFields struct {
 	modelDownloadBar    *widget.ProgressBar
 	modelDownloadMsg    *widget.Label
 
-	// cloud
-	cloudProvider *widget.Entry
-	cloudAPIKey   *widget.Entry
-	cloudBaseURL  *widget.Entry
+	// openai
+	openAIAPIKey  *widget.Entry
+	openAIBaseURL *widget.Entry
+	openAIModel   *widget.Entry
+
+	// deepgram
+	deepgramAPIKey    *widget.Entry
+	deepgramBaseURL   *widget.Entry
+	deepgramModel     *widget.SelectEntry
+	deepgramBalance   *widget.Label
+	deepgramRefresh   *widget.Button
+	deepgramStreaming *widget.Check
 
 	// STT retry
 	sttRetryEnabled     *widget.Check
@@ -302,7 +364,8 @@ type formFields struct {
 	// the irrelevant ones. Populated by buildSTTTab; nil before then.
 	goWhisperCard  fyne.CanvasObject
 	whisperCppCard fyne.CanvasObject
-	cloudCard      fyne.CanvasObject
+	openAICard     fyne.CanvasObject
+	deepgramCard   fyne.CanvasObject
 }
 
 func (w *Window) buildContent() fyne.CanvasObject {
@@ -315,11 +378,11 @@ func (w *Window) buildContent() fyne.CanvasObject {
 	attachAutoSave(ff, w.saver.Schedule)
 
 	tabs := container.NewAppTabs(
-		container.NewTabItemWithIcon(i18n.T("tab.stt"), assets.UIIcon("mic"), w.buildSTTTab(ff)),
+		container.NewTabItemWithIcon(i18n.T(i18n.KeyTabStt), assets.UIIcon("mic"), w.buildSTTTab(ff)),
 		container.NewTabItemWithIcon(
-			i18n.T("tab.capture_hotkey"), assets.UIIcon("record"), w.buildCaptureHotkeyTab(ff),
+			i18n.T(i18n.KeyTabCaptureHotkey), assets.UIIcon("record"), w.buildCaptureHotkeyTab(ff),
 		),
-		container.NewTabItemWithIcon(i18n.T("tab.daemon"), assets.UIIcon("server"), w.buildDaemonTab(ff)),
+		container.NewTabItemWithIcon(i18n.T(i18n.KeyTabDaemon), assets.UIIcon("server"), w.buildDaemonTab(ff)),
 	)
 
 	// Resize the window to fit the active tab so each tab gets a
@@ -341,6 +404,34 @@ func (w *Window) buildContent() fyne.CanvasObject {
 		applyProviderVisibility(ff)
 		w.fitWindowToTab(tabs.Selected())
 		w.saver.Schedule()
+	}
+
+	// Live UI-language switch: rebuild the entire content with the new
+	// locale so labels, tooltips and card titles re-resolve through i18n.T.
+	// Schedule() persists the change; Init must happen before SetContent so
+	// the rebuilt widgets pick up the new translations.
+	ff.uiLanguage.OnChanged = func(code string) {
+		w.cfg.UILanguage = code
+
+		if err := i18n.Init(code); err != nil {
+			w.log.Warn("settings: i18n switch failed", slog.Any("err", err))
+		}
+
+		w.saver.Schedule()
+
+		// Defer the rebuild to the next Fyne tick. Calling SetContent
+		// straight from the Select's OnChanged corrupts widget→canvas
+		// bookkeeping — clicks on the recreated children (notably
+		// SelectEntry dropdowns) then crash with a nil canvas in
+		// NewPopUpMenu. fyne.Do queues the rebuild after the current
+		// event finishes propagating.
+		fyne.Do(func() {
+			if w.win == nil {
+				return
+			}
+
+			w.win.SetContent(w.buildContent())
+		})
 	}
 
 	return tabs
@@ -374,7 +465,8 @@ func (w *Window) fitWindowToTab(tab *container.TabItem) {
 func attachAutoSave(ff *formFields, schedule func()) {
 	entries := []*widget.Entry{
 		ff.whisperURL, ff.whisperTimeout, ff.keepAudioDir,
-		ff.cloudProvider, ff.cloudAPIKey, ff.cloudBaseURL,
+		ff.openAIAPIKey, ff.openAIBaseURL, ff.openAIModel,
+		ff.deepgramAPIKey, ff.deepgramBaseURL,
 		ff.sttRetryInitDelay, ff.sttRetryMaxDelay, ff.sttRetryMaxAttempts,
 		ff.captureSampleRate, ff.captureChannels, ff.captureMaxDuration,
 		ff.captureSilenceThreshold,
@@ -390,6 +482,7 @@ func attachAutoSave(ff *formFields, schedule func()) {
 	// behaves the same.
 	ff.whisperModel.OnChanged = func(string) { schedule() }
 	ff.modelPath.OnChanged = func(string) { schedule() }
+	ff.deepgramModel.OnChanged = func(string) { schedule() }
 
 	selects := []*widget.Select{
 		ff.provider, ff.language, ff.uiLanguage,
@@ -404,6 +497,7 @@ func attachAutoSave(ff *formFields, schedule func()) {
 	checks := []*widget.Check{
 		ff.hotkeyEnabled,
 		ff.whisperAutoDownload, ff.sttRetryEnabled,
+		ff.deepgramStreaming,
 		ff.logTranscript, ff.keepAudio,
 		ff.restoreClipboard,
 	}
@@ -466,6 +560,7 @@ func (w *Window) setFieldValues(ff *formFields) {
 	ff.logLevel.SetSelected(logLevel)
 	ff.whisperAutoDownload.SetChecked(w.cfg.GoWhisper.AutoDownload)
 	ff.sttRetryEnabled.SetChecked(w.cfg.STTRetry.Enabled)
+	ff.deepgramStreaming.SetChecked(w.cfg.Deepgram.Streaming)
 	ff.hotkeyEnabled.SetChecked(w.cfg.Hotkey.Enabled)
 	ff.logTranscript.SetChecked(w.cfg.Privacy.LogTranscript)
 	ff.keepAudio.SetChecked(w.cfg.Privacy.KeepAudio)

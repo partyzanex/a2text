@@ -17,9 +17,9 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/infra/daemon"
 	"github.com/partyzanex/a2text/internal/infra/setup"
-	"github.com/partyzanex/a2text/internal/infra/config"
 )
 
 const configErrorExitCode = 2
@@ -33,7 +33,7 @@ func buildVersion() string {
 // NewCommand returns the root CLI command for a2text.
 //
 // Env vars for fields owned by VoiceConfig (provider, language, log_level,
-// cloud_*, model_path, etc.) are read by viper inside config.LoadVoice via
+// openai.*, deepgram.*, model_path, etc.) are read by viper inside config.LoadVoice via
 // the A2TEXT_ prefix. CLI flags here intentionally do NOT register
 // cli.EnvVars sources for those fields — having two pulpits reading the
 // same variable just complicates reasoning. Only A2TEXT_CONFIG and
@@ -59,7 +59,7 @@ func rootFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    FlagConfig,
 			Aliases: []string{"c"},
-			Usage:   "path to config file (default: ./config.yaml or ./app/config.yaml)",
+			Usage:   "path to config file (default: per-user config dir, then ./config.yaml)",
 			Sources: cli.EnvVars("A2TEXT_CONFIG"),
 		},
 		&cli.StringFlag{
@@ -81,12 +81,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:  FlagProvider,
-			Usage: "override stt provider: go-whisper | whisper-cpp | cloud",
-		},
-		&cli.StringFlag{
-			Name: FlagCloudProvider,
-			Usage: "override cloud stt provider: openai | deepgram " +
-				"(requires A2TEXT_CLOUD_API_KEY env var or cloud_api_key in config)",
+			Usage: "override stt provider: go-whisper | whisper-cpp | openai | deepgram",
 		},
 		&cli.StringFlag{
 			Name:  FlagModelPath,
@@ -155,7 +150,7 @@ func action(ctx context.Context, cmd *cli.Command) error {
 	applyFlagOverrides(cmd, cfg)
 
 	// Re-validate after overrides — flags can move the config into an
-	// invalid state (e.g. --provider=cloud without cloud_provider/cloud_api_key).
+	// invalid state (e.g. --provider=openai without openai.api_key).
 	if err := config.ValidateVoice(cfg); err != nil {
 		return cli.Exit(fmt.Errorf("invalid config after CLI overrides: %w", err), configErrorExitCode)
 	}
@@ -291,10 +286,6 @@ func validateModeFlags(cmd *cli.Command, filePath string, recordDuration time.Du
 func applyFlagOverrides(cmd *cli.Command, cfg *config.VoiceConfig) {
 	if val := cmd.String(FlagProvider); val != "" {
 		cfg.Provider = val
-	}
-
-	if val := cmd.String(FlagCloudProvider); val != "" {
-		cfg.CloudProvider = val
 	}
 
 	if val := cmd.String(FlagModelPath); val != "" {

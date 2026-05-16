@@ -12,7 +12,7 @@ import (
 // STTBackend is an internal interface for transcription backends.
 // It mirrors usecases/transcribe.Transcriber but is defined here to avoid circular imports.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=stt -destination=fallback_mocks_test.go -source=fallback.go STTBackend
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=stt -destination=fallback_mocks_test.go -source=fallback.go STTBackend
 type STTBackend interface {
 	LoadModel(path string) error
 	ReloadModel(newPath string) error

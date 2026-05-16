@@ -22,33 +22,33 @@ import (
 // buildDaemonTab assembles the "Демон" tab: IPC, working-files,
 // logging and privacy. Technical infrastructure settings for the daemon.
 func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
-	ipc := rowsCard(i18n.T("card.ipc"),
-		formRowWithHelp(i18n.T("label.socket_path"), "help.socket_path", ff.daemonSocketPath),
-		formRowValidatedWithHelp(i18n.T("label.grace_period"), "help.grace_period",
+	ipc := rowsCard(i18n.T(i18n.KeyCardIpc),
+		formRowWithHelp(i18n.T(i18n.KeyLabelSocketPath), "help.socket_path", ff.daemonSocketPath),
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelGracePeriod), "help.grace_period",
 			ff.daemonGracePeriod, validateDuration),
 	)
 
-	files := rowsCard(i18n.T("card.files"),
-		formRowWithHelp(i18n.T("label.temp_dir"), "help.temp_dir",
+	files := rowsCard(i18n.T(i18n.KeyCardFiles),
+		formRowWithHelp(i18n.T(i18n.KeyLabelTempDir), "help.temp_dir",
 			w.buildTempDirField(ff)),
-		formRowValidatedWithHelp(i18n.T("label.convert_timeout"), "help.convert_timeout",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelConvertTimeout), "help.convert_timeout",
 			ff.convertTimeout, validateDuration),
-		formRowValidatedWithHelp(i18n.T("label.transcribe_timeout"), "help.transcribe_timeout",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelTranscribeTimeout), "help.transcribe_timeout",
 			ff.transcribeTimeout, validateDuration),
 	)
 
-	logging := rowsCard(i18n.T("card.logging"),
-		formRowWithHelp(i18n.T("label.log_level"), "help.log_level", ff.logLevel),
+	logging := rowsCard(i18n.T(i18n.KeyCardLogging),
+		formRowWithHelp(i18n.T(i18n.KeyLabelLogLevel), "help.log_level", ff.logLevel),
 	)
 
-	privacy := rowsCard(i18n.T("card.privacy"),
-		formRowWithHelp(i18n.T("label.log_transcript"), "help.log_transcript",
+	privacy := rowsCard(i18n.T(i18n.KeyCardPrivacy),
+		formRowWithHelp(i18n.T(i18n.KeyLabelLogTranscript), "help.log_transcript",
 			leftAlign(ff.logTranscript)),
-		formRowWithHelp(i18n.T("label.keep_audio"), "help.keep_audio",
+		formRowWithHelp(i18n.T(i18n.KeyLabelKeepAudio), "help.keep_audio",
 			leftAlign(ff.keepAudio)),
-		formRowWithHelp(i18n.T("label.keep_audio_dir"), "help.keep_audio_dir",
+		formRowWithHelp(i18n.T(i18n.KeyLabelKeepAudioDir), "help.keep_audio_dir",
 			w.buildKeepAudioDirField(ff)),
-		formRowWithHelp(i18n.T("label.keep_audio_format"), "help.keep_audio_format", ff.keepAudioFormat),
+		formRowWithHelp(i18n.T(i18n.KeyLabelKeepAudioFormat), "help.keep_audio_format", ff.keepAudioFormat),
 	)
 
 	return tabBody(ipc, files, logging, privacy)

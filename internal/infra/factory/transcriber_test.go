@@ -10,8 +10,8 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	factory "github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	factory "github.com/partyzanex/a2text/internal/infra/factory"
 )
 
 // bgContext is a shorthand for context.Background() used in BuildTranscriber calls.
@@ -45,8 +45,16 @@ func (s *BuildersSuite) TestBuildConverter_GoWhisper_PassthroughBehaviour() {
 	s.assertPassthrough(conv)
 }
 
-func (s *BuildersSuite) TestBuildConverter_Cloud_PassthroughBehaviour() {
-	cfg := s.validCfg(config.VoiceProviderCloud)
+func (s *BuildersSuite) TestBuildConverter_OpenAI_PassthroughBehaviour() {
+	cfg := s.validCfg(config.VoiceProviderOpenAI)
+
+	conv, err := factory.BuildConverter(cfg, "", s.log)
+	s.Require().NoError(err)
+	s.assertPassthrough(conv)
+}
+
+func (s *BuildersSuite) TestBuildConverter_Deepgram_PassthroughBehaviour() {
+	cfg := s.validCfg(config.VoiceProviderDeepgram)
 
 	conv, err := factory.BuildConverter(cfg, "", s.log)
 	s.Require().NoError(err)
@@ -84,15 +92,6 @@ func (s *BuildersSuite) TestBuildTranscriber_GoWhisper_OK() {
 	s.NotNil(tr)
 }
 
-func (s *BuildersSuite) TestBuildTranscriber_WhisperCpp_NotEnabledInStageI0() {
-	cfg := s.validCfg(config.VoiceProviderWhisperCpp)
-
-	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
-	s.Require().Error(err)
-	s.Nil(tr)
-	s.Contains(err.Error(), "-tags whisper")
-}
-
 func (s *BuildersSuite) TestBuildTranscriber_UnknownProvider_ReturnsError() {
 	cfg := s.validCfg("banana-stt")
 
@@ -102,49 +101,22 @@ func (s *BuildersSuite) TestBuildTranscriber_UnknownProvider_ReturnsError() {
 	s.Contains(err.Error(), `unknown provider "banana-stt"`)
 }
 
-func (s *BuildersSuite) TestBuildTranscriber_Cloud_OpenAI_OK() {
-	cfg := s.validCfg(config.VoiceProviderCloud)
-	cfg.CloudProvider = config.VoiceCloudProviderOpenAI
-	cfg.CloudAPIKey = "sk-test"
+func (s *BuildersSuite) TestBuildTranscriber_OpenAI_OK() {
+	cfg := s.validCfg(config.VoiceProviderOpenAI)
+	cfg.OpenAI = config.VoiceOpenAIConfig{APIKey: "sk-test"}
 
 	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
 	s.Require().NoError(err)
 	s.NotNil(tr)
 }
 
-func (s *BuildersSuite) TestBuildTranscriber_Cloud_Deepgram_OK() {
-	cfg := s.validCfg(config.VoiceProviderCloud)
-	cfg.CloudProvider = config.VoiceCloudProviderDeepgram
-	cfg.CloudAPIKey = "dg-test"
+func (s *BuildersSuite) TestBuildTranscriber_Deepgram_OK() {
+	cfg := s.validCfg(config.VoiceProviderDeepgram)
+	cfg.Deepgram = config.VoiceDeepgramConfig{APIKey: "dg-test"}
 
 	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
 	s.Require().NoError(err)
 	s.NotNil(tr)
-}
-
-func (s *BuildersSuite) TestBuildTranscriber_Cloud_EmptyCloudProvider_ReturnsError() {
-	// Direct call bypasses config.ValidateVoice — buildCloud must still
-	// reject empty CloudProvider rather than silently picking openai.
-	// Set a non-empty API key so we reach the provider switch, not the key check.
-	cfg := s.validCfg(config.VoiceProviderCloud)
-	cfg.CloudProvider = ""
-	cfg.CloudAPIKey = "test-key"
-
-	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
-	s.Require().Error(err)
-	s.Nil(tr)
-	s.Contains(err.Error(), "unknown cloud provider")
-}
-
-func (s *BuildersSuite) TestBuildTranscriber_Cloud_UnknownCloudProvider_ReturnsError() {
-	cfg := s.validCfg(config.VoiceProviderCloud)
-	cfg.CloudProvider = "lol-enterprise-ai-9000"
-	cfg.CloudAPIKey = "x" // must be non-empty to reach the provider switch
-
-	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
-	s.Require().Error(err)
-	s.Nil(tr)
-	s.Contains(err.Error(), "unknown cloud provider")
 }
 
 // --- Nil/invalid guard tests ---
@@ -187,25 +159,24 @@ func (s *BuildersSuite) TestBuildConverter_NilLog_NoPanic() {
 	})
 }
 
-func (s *BuildersSuite) TestBuildTranscriber_Cloud_EmptyAPIKey_ReturnsError() {
-	cfg := s.validCfg(config.VoiceProviderCloud)
-	cfg.CloudProvider = config.VoiceCloudProviderOpenAI
-	cfg.CloudAPIKey = "" // explicitly empty
+func (s *BuildersSuite) TestBuildTranscriber_OpenAI_EmptyAPIKey_ReturnsError() {
+	cfg := s.validCfg(config.VoiceProviderOpenAI)
+	cfg.OpenAI = config.VoiceOpenAIConfig{APIKey: ""}
 
 	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
 	s.Require().Error(err)
 	s.Nil(tr)
-	s.Contains(err.Error(), "cloud_api_key")
+	s.Contains(err.Error(), "openai.api_key")
 }
 
-func (s *BuildersSuite) TestBuildTranscriber_WhisperCpp_ErrorMessageNoStageReference() {
-	cfg := s.validCfg(config.VoiceProviderWhisperCpp)
+func (s *BuildersSuite) TestBuildTranscriber_Deepgram_EmptyAPIKey_ReturnsError() {
+	cfg := s.validCfg(config.VoiceProviderDeepgram)
+	cfg.Deepgram = config.VoiceDeepgramConfig{APIKey: ""}
 
-	_, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
+	tr, err := factory.BuildTranscriber(bgContext(), cfg, s.log)
 	s.Require().Error(err)
-	// Error must mention the build tag but must not carry stale stage references.
-	s.Contains(err.Error(), "-tags whisper")
-	s.NotContains(err.Error(), "stage I.0")
+	s.Nil(tr)
+	s.Contains(err.Error(), "deepgram.api_key")
 }
 
 // validCfg returns a minimum-valid VoiceConfig for the given provider so

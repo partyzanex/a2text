@@ -16,19 +16,15 @@ const (
 	FlagRecord = "record"
 
 	// FlagProvider overrides config.Provider for one invocation
-	// (useful when switching between go-whisper and cloud during dev).
+	// (useful when switching between go-whisper, whisper-cpp, openai, deepgram during dev).
 	FlagProvider = "provider"
-
-	// FlagCloudProvider overrides config.CloudProvider (openai | deepgram).
-	// Relevant only with --provider=cloud.
-	FlagCloudProvider = "cloud-provider"
 
 	// FlagModelPath overrides config.ModelPath (path to a local GGML model).
 	// Relevant only with --provider=whisper-cpp.
 	//
-	// CloudAPIKey is intentionally NOT exposed as a flag — it is a secret
-	// and would land in shell history. Use the A2TEXT_CLOUD_API_KEY env var
-	// (read by viper inside config.LoadVoice) instead.
+	// API keys are intentionally NOT exposed as flags — they are secrets
+	// and would land in shell history. Use A2TEXT_OPENAI_API_KEY / A2TEXT_DEEPGRAM_API_KEY
+	// env vars (read by viper inside config.LoadVoice) instead.
 	FlagModelPath = "model-path"
 
 	// FlagLanguage overrides config.Language.

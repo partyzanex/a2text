@@ -17,19 +17,13 @@ import (
 const (
 	ProviderGoWhisper  = "go-whisper"
 	ProviderWhisperCpp = "whisper-cpp"
-	ProviderCloud      = "cloud"
-
-	CloudProviderOpenAI   = "openai"
-	CloudProviderDeepgram = "deepgram"
+	ProviderOpenAI     = "openai"
+	ProviderDeepgram   = "deepgram"
 )
 
 // ErrUnknownProvider is returned by Build when cfg.Provider is not one of the
 // known provider constants. Callers can test with errors.Is.
 var ErrUnknownProvider = errors.New("stt: unknown provider")
-
-// ErrUnknownCloudProvider is returned by buildCloud when cfg.CloudProvider is
-// not one of the known cloud provider constants.
-var ErrUnknownCloudProvider = errors.New("stt: unknown cloud provider")
 
 // Config carries the provider selection and per-provider tuning knobs.
 // Callers map from their own config struct (*config.Config or *config.VoiceConfig)
@@ -45,12 +39,17 @@ type Config struct {
 	GoWhisperTimeout      time.Duration
 	GoWhisperAutoDownload bool
 
-	// Cloud* are used when Provider == ProviderCloud or when CloudEnabled is
-	// true (secondary lane for go-whisper and whisper-cpp primary providers).
-	CloudProvider string // CloudProviderOpenAI | CloudProviderDeepgram
-	CloudAPIKey   string
-	CloudBaseURL  string
-	CloudEnabled  bool
+	// OpenAI* / Deepgram* are used when Provider selects that cloud or when
+	// CloudEnabled is true (secondary lane for go-whisper / whisper-cpp).
+	// Cloud lane prefers OpenAI when both are set.
+	OpenAIAPIKey      string
+	OpenAIBaseURL     string
+	OpenAIModel       string
+	DeepgramAPIKey    string
+	DeepgramBaseURL   string
+	DeepgramModel     string
+	DeepgramStreaming bool
+	CloudEnabled      bool
 
 	// ModelPath is the path to the whisper.cpp GGML model file.
 	// Used when Provider == ProviderWhisperCpp.
@@ -97,11 +96,35 @@ func Build(ctx context.Context, cfg *Config, log *slog.Logger) (transcribe.Trans
 		return buildGoWhisper(ctx, cfg, log)
 	case ProviderWhisperCpp:
 		return buildWhisperCpp(cfg, log)
-	case ProviderCloud:
-		return buildCloud(cfg, log)
+	case ProviderOpenAI:
+		return buildOpenAI(cfg, log)
+	case ProviderDeepgram:
+		if cfg.DeepgramStreaming {
+			return buildDeepgramStream(cfg, log)
+		}
+
+		return buildDeepgram(cfg, log)
 	default:
 		return nil, fmt.Errorf("%w %q", ErrUnknownProvider, cfg.Provider)
 	}
+}
+
+// pickCloudFallback returns the configured cloud transcriber for the
+// fallback lane: OpenAI takes precedence when both keys are set, then
+// Deepgram. Returns nil + nil error when no cloud is configured (caller
+// keeps the primary-only transcriber).
+//
+//nolint:ireturn // returns transcribe.Transcriber per DIP
+func pickCloudFallback(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
+	if cfg.OpenAIAPIKey != "" {
+		return buildOpenAI(cfg, log)
+	}
+
+	if cfg.DeepgramAPIKey != "" {
+		return buildDeepgram(cfg, log)
+	}
+
+	return nil, nil //nolint:nilnil // explicit "no fallback configured"
 }
 
 //nolint:ireturn // returns transcribe.Transcriber defined in usecases (consumer owns the interface, per DIP)
@@ -120,18 +143,19 @@ func buildGoWhisper(ctx context.Context, cfg *Config, log *slog.Logger) (transcr
 	}
 
 	if cfg.CloudEnabled {
-		cloud, err := buildCloud(cfg, log)
+		cloud, err := pickCloudFallback(cfg, log)
 		if err != nil {
 			return nil, err
 		}
 
-		log.Info("using go-whisper+cloud fallback transcriber",
-			slog.String("url", sanitizeURL(cfg.GoWhisperURL)),
-			slog.String("model", cfg.GoWhisperModel),
-			slog.String("cloud", cfg.CloudProvider),
-		)
+		if cloud != nil {
+			log.Info("using go-whisper+cloud fallback transcriber",
+				slog.String("url", sanitizeURL(cfg.GoWhisperURL)),
+				slog.String("model", cfg.GoWhisperModel),
+			)
 
-		return stt.NewFallbackTranscriber(gowhisper, cloud, log), nil
+			return stt.NewFallbackTranscriber(gowhisper, cloud, log), nil
+		}
 	}
 
 	log.Info("using go-whisper transcriber",
@@ -143,27 +167,46 @@ func buildGoWhisper(ctx context.Context, cfg *Config, log *slog.Logger) (transcr
 }
 
 //nolint:ireturn // returns transcribe.Transcriber defined in usecases (consumer owns the interface, per DIP)
-func buildCloud(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
-	if cfg.CloudAPIKey == "" {
-		return nil, errors.New("stt: cloud_api_key must not be empty")
+func buildOpenAI(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
+	if cfg.OpenAIAPIKey == "" {
+		return nil, errors.New("stt: openai.api_key must not be empty")
 	}
 
-	switch cfg.CloudProvider {
-	case CloudProviderDeepgram:
-		log.Info("using deepgram cloud transcriber")
+	log.Info("using openai cloud transcriber",
+		slog.String("base_url", sanitizeURL(cfg.OpenAIBaseURL)),
+		slog.String("model", cfg.OpenAIModel),
+	)
+	// nil http.Client — use the default transport. OpenAI adapter has no
+	// local MaxFileSize guard; the API enforces its own upload limits.
+	return stt.NewOpenAITranscriber(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, nil, log), nil
+}
 
-		return stt.NewDeepgramTranscriber(cfg.CloudAPIKey, cfg.CloudBaseURL, cfg.MaxFileSize, log), nil
-	case CloudProviderOpenAI:
-		log.Info("using openai cloud transcriber")
-		// nil http.Client — use the default transport. OpenAI adapter has no
-		// local MaxFileSize guard; the API enforces its own upload limits.
-
-		return stt.NewOpenAITranscriber(cfg.CloudAPIKey, cfg.CloudBaseURL, nil, log), nil
-	default:
-		return nil, fmt.Errorf("%w %q (supported: %s, %s)",
-			ErrUnknownCloudProvider, cfg.CloudProvider, CloudProviderOpenAI, CloudProviderDeepgram,
-		)
+//nolint:ireturn // returns transcribe.Transcriber defined in usecases (consumer owns the interface, per DIP)
+func buildDeepgramStream(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
+	if cfg.DeepgramAPIKey == "" {
+		return nil, errors.New("stt: deepgram.api_key must not be empty")
 	}
+
+	log.Info("using deepgram streaming transcriber",
+		slog.String("base_url", sanitizeURL(cfg.DeepgramBaseURL)),
+		slog.String("model", cfg.DeepgramModel),
+	)
+
+	return stt.NewDeepgramStreamTranscriber(cfg.DeepgramAPIKey, cfg.DeepgramBaseURL, cfg.DeepgramModel, log), nil
+}
+
+//nolint:ireturn // returns transcribe.Transcriber defined in usecases (consumer owns the interface, per DIP)
+func buildDeepgram(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
+	if cfg.DeepgramAPIKey == "" {
+		return nil, errors.New("stt: deepgram.api_key must not be empty")
+	}
+
+	log.Info("using deepgram cloud transcriber",
+		slog.String("base_url", sanitizeURL(cfg.DeepgramBaseURL)),
+		slog.String("model", cfg.DeepgramModel),
+	)
+
+	return stt.NewDeepgramTranscriber(cfg.DeepgramAPIKey, cfg.DeepgramBaseURL, cfg.MaxFileSize, log), nil
 }
 
 // sanitizeURL strips userinfo from a URL before logging to avoid writing

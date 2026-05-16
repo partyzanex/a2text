@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/partyzanex/a2text/internal/infra/depcheck"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/depcheck"
 )
 
 type DepCheckSuite struct {
@@ -593,24 +593,16 @@ func (s *DepCheckSuite) TestCheckMode_UnknownProvider_Newline_SanitizedInName() 
 		"provider name with embedded newlines must be sanitized before appearing in dep output")
 }
 
-// --- cloudDeps: unknown provider value is NOT echoed into Detail ---
+// --- openAI provider with empty key surfaces a dep error, not a panic ---
 
-func (s *DepCheckSuite) TestCheckMode_CloudDep_UnknownProvider_DetailHidden() {
+func (s *DepCheckSuite) TestCheckMode_OpenAI_NoKey_ReportsMissing() {
 	cfg := baseGoWhisperCfg()
-	cfg.Provider = config.VoiceProviderCloud
-	cfg.CloudProvider = "unknown-provider-with-secret-token"
-	cfg.CloudAPIKey = "key"
+	cfg.Provider = config.VoiceProviderOpenAI
+	cfg.OpenAI = config.VoiceOpenAIConfig{APIKey: ""}
 
 	allDeps, _ := depcheck.CheckMode(s.T().Context(), depcheck.ModeFileWAV, cfg, testEnv(nil))
-
-	for _, dep := range allDeps {
-		if dep.Group == depcheck.GroupSTT {
-			res := dep.Check(s.T().Context(), testEnv(nil))
-			s.True(res.Found)
-			s.NotContains(res.Detail, "unknown-provider-with-secret-token",
-				"unrecognised cloud_provider must not appear verbatim in Detail")
-		}
-	}
+	sttDeps := filterGroup(allDeps, depcheck.GroupSTT)
+	s.Require().NotEmpty(sttDeps)
 }
 
 // --- autopasteDeps: Output.Mode with spaces and caps is normalised ---

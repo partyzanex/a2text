@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -13,7 +14,7 @@ import (
 // clipboard autopaste adapters. Defined here (consumer side) so output
 // does not import internal/adapters/clipboard — wiring connects them.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=output -destination=clipboard_autopaste_mocks_test.go -source=clipboard_autopaste.go Autopaster,ClipboardDelivery,ClipboardSnapshotter,ClipboardTypedCopier
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=output -destination=clipboard_autopaste_mocks_test.go -source=clipboard_autopaste.go Autopaster,ClipboardDelivery,ClipboardSnapshotter,ClipboardTypedCopier
 type Autopaster interface {
 	Paste(ctx context.Context) error
 }
@@ -109,7 +110,21 @@ type ClipboardAutopasteOutput struct {
 	restorer    ClipboardTypedCopier
 	delay       time.Duration
 	log         *slog.Logger
+
+	// preMu guards preSnap. preSnap is populated by PreSnapshot and
+	// consumed by takeSnapshot; protects the read-then-clear pattern
+	// without coupling cycle ordering to a specific goroutine.
+	preMu   sync.Mutex
+	preSnap <-chan ClipboardSnapshot
 }
+
+// preSnapshotWaitGrace caps how long takeSnapshot blocks waiting on the
+// background pre-snapshot if it has not finished yet. The pre-snapshot
+// starts at recording-start, so by the time Deliver is called it should
+// be ready instantly. The cap is a defensive fallback for unusual cases
+// (very short recordings, slow wl-paste) so we never block longer than
+// the synchronous path would have.
+const preSnapshotWaitGrace = 100 * time.Millisecond
 
 // NewClipboardAutopasteOutput wires a clipboard-delivery step with an
 // autopaste step. delivery and paster are required; logger may be nil.
@@ -151,11 +166,16 @@ func (o *ClipboardAutopasteOutput) WithClipboardRestore(
 		return o
 	}
 
-	clone := *o
-	clone.snapshotter = snap
-	clone.restorer = restorer
-
-	return &clone
+	// Field-by-field copy — direct struct dereference would copy the
+	// preMu sync.Mutex, which the vet copylocks check (rightly) rejects.
+	return &ClipboardAutopasteOutput{
+		delivery:    o.delivery,
+		autopaster:  o.autopaster,
+		snapshotter: snap,
+		restorer:    restorer,
+		delay:       o.delay,
+		log:         o.log,
+	}
 }
 
 // Deliver runs the clipboard → paste (→ restore-previous) pipeline.
@@ -197,15 +217,55 @@ func (o *ClipboardAutopasteOutput) Deliver(ctx context.Context, text string) err
 	return nil
 }
 
-// takeSnapshot reads the current clipboard, if a snapshotter is wired.
+// PreSnapshot kicks off the clipboard snapshot in the background so the
+// result is ready by the time Deliver is called. Voice.UseCase invokes
+// this at the start of recording — the snapshot then runs in parallel
+// with the ~few-second-long capture phase, hiding wl-paste's 300ms
+// round-trip behind work we were going to do anyway.
+//
+// Calling twice before Deliver replaces the in-flight snapshot. Safe
+// to call when no snapshotter is wired (no-op) or when restore is
+// disabled (the channel is harvested but discarded).
+func (o *ClipboardAutopasteOutput) PreSnapshot(ctx context.Context) {
+	if o == nil || o.snapshotter == nil || o.restorer == nil {
+		return
+	}
+
+	ch := make(chan ClipboardSnapshot, 1)
+
+	go func() {
+		snap, err := o.snapshotter.Snapshot(ctx)
+		if err != nil {
+			o.logger().Debug("voice: pre-snapshot failed, will retry sync at deliver",
+				slog.String("err", err.Error()))
+
+			ch <- ClipboardSnapshot{}
+
+			return
+		}
+
+		ch <- snap
+	}()
+
+	o.preMu.Lock()
+	o.preSnap = ch
+	o.preMu.Unlock()
+}
+
+// takeSnapshot returns the clipboard snapshot to restore after autopaste.
+// Prefers the pre-snapshot started by PreSnapshot; falls back to a
+// synchronous read if the pre-snapshot is unavailable or did not finish
+// within preSnapshotWaitGrace.
+//
 // Returns a zero ClipboardSnapshot on any failure or when no snapshotter
 // is configured — the restore step short-circuits on Empty/MIME=="".
-//
-// Logged WARN once on failure so the user is not surprised when the
-// previous content does not come back.
 func (o *ClipboardAutopasteOutput) takeSnapshot(ctx context.Context) ClipboardSnapshot {
 	if o.snapshotter == nil || o.restorer == nil {
 		return ClipboardSnapshot{}
+	}
+
+	if snap, ok := o.consumePreSnapshot(); ok {
+		return snap
 	}
 
 	snap, err := o.snapshotter.Snapshot(ctx)
@@ -217,6 +277,33 @@ func (o *ClipboardAutopasteOutput) takeSnapshot(ctx context.Context) ClipboardSn
 	}
 
 	return snap
+}
+
+// consumePreSnapshot drains the pre-snapshot channel if one is pending.
+// Returns (snap, true) when the background snapshot finished in time;
+// (zero, false) when no pre-snapshot is available OR the wait grace
+// expired (in which case the caller falls back to a synchronous read).
+//
+// The channel is always cleared so a stale pre-snapshot cannot leak into
+// the next cycle.
+func (o *ClipboardAutopasteOutput) consumePreSnapshot() (ClipboardSnapshot, bool) {
+	o.preMu.Lock()
+	ch := o.preSnap
+	o.preSnap = nil
+	o.preMu.Unlock()
+
+	if ch == nil {
+		return ClipboardSnapshot{}, false
+	}
+
+	select {
+	case snap := <-ch:
+		return snap, true
+	case <-time.After(preSnapshotWaitGrace):
+		o.logger().Debug("voice: pre-snapshot not ready in time, falling back to sync read")
+
+		return ClipboardSnapshot{}, false
+	}
 }
 
 // maybeRestore writes the previous clipboard payload back, guarded by a

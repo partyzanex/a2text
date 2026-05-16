@@ -1,200 +1,123 @@
 include go.mk
 
-BINARY_NAME   := a2text
-CMD_PATH      := ./cmd/a2text
-BIN_DIR       := ./bin
+# --- Configuration ---
+
+BINARY_NAME := a2text
+CMD_PATH    := ./cmd/a2text
+BIN_DIR     := ./bin
 
 WHISPER_DIR := ./whisper.cpp
-UNAME_S     := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-    LIB_EXT := dylib
-else
-    LIB_EXT := so
-endif
-WHISPER_LIB := $(WHISPER_DIR)/build/src/libwhisper.$(LIB_EXT)
-MODEL_URL   := https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
-MODEL_PATH  := ./ggml-small.bin
-WHISPER_MODEL_PATH ?= $(MODEL_PATH)
+WHISPER_LIB := $(WHISPER_DIR)/build/src/libwhisper.a
 
-GO_WHISPER_URL    ?= http://localhost:9081
-GO_WHISPER_MODELS ?= ggml-small.bin
-GO_WHISPER_MODEL  ?= ggml-small
+PREFIX        ?= $(HOME)/.local
+DESTDIR       ?=
+XDG_DATA_HOME ?= $(HOME)/.local/share
 
-CGO_CFLAGS  := -I$(CURDIR)/$(WHISPER_DIR)/include -I$(CURDIR)/$(WHISPER_DIR)/ggml/include
-CGO_LDFLAGS := -L$(CURDIR)/$(WHISPER_DIR)/build/src -L$(CURDIR)/$(WHISPER_DIR) -lwhisper -lm -lstdc++ -Wl,-rpath,$(CURDIR)/$(WHISPER_DIR)/build/src
+# Host OS detection. Desktop entries (XDG .desktop files) are a
+# freedesktop.org convention used by Linux and BSD desktops; macOS and
+# Windows have their own packaging conventions, so we skip the
+# .desktop install there. Uname output: Linux, Darwin, FreeBSD,
+# OpenBSD, NetBSD, MINGW64_NT-*, etc.
+UNAME_S := $(shell uname -s 2>/dev/null || echo unknown)
 
-PREFIX         ?= $(HOME)/.local
-DESTDIR        ?=
-XDG_DATA_HOME  ?= $(HOME)/.local/share
-XDG_CONFIG_HOME ?= $(HOME)/.config
+BIN_OUT := $(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME)
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/partyzanex/a2text/internal/infra/cmd.Version=$(VERSION) \
-           -X github.com/partyzanex/a2text/internal/infra/cmd.Commit=$(COMMIT)
+LDFLAGS := -X github.com/partyzanex/a2text/internal/infra/cli.Version=$(VERSION) \
+           -X github.com/partyzanex/a2text/internal/infra/cli.Commit=$(COMMIT)
 
-# --- Build ---
+CGO_CFLAGS  := -I$(CURDIR)/$(WHISPER_DIR)/include -I$(CURDIR)/$(WHISPER_DIR)/ggml/include
+CGO_LDFLAGS := -L$(CURDIR)/$(WHISPER_DIR)/build/src -L$(CURDIR)/$(WHISPER_DIR)/build/ggml/src \
+               -lwhisper -lggml -lggml-base -lggml-cpu -lm -lstdc++ -lgomp
 
-.PHONY: build
-build:
-	@mkdir -p $(BIN_DIR)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
-
-# build-wayland: pure-Go build (default target). Kept as an alias for the
-# legacy invocation; daemon detects Wayland/X11 at runtime and uses the
-# unified evdev + portal/uinput pipeline either way.
-.PHONY: build-wayland
-build-wayland: build
-
-# build-whisper: CGo build with local whisper.cpp STT provider.
-.PHONY: build-whisper
-build-whisper: $(WHISPER_LIB)
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	go build -tags whisper -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
-
-# --- Test ---
-
-# test-all: lint + all test suites (unit, integration, whisper CGo, go-whisper).
-.PHONY: test-all
-test-all: lint test test-integration test-whisper test-gowhisper
-
-.PHONY: test
-test:
-	@CGO_ENABLED=1 go test -v -count=1 -race ./...
-
-.PHONY: test-integration
-test-integration:
-	@CGO_ENABLED=1 go test -v -count=1 -race -tags=integration ./...
-
-.PHONY: test-whisper
-test-whisper: $(WHISPER_MODEL_PATH)
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR):$$LD_LIBRARY_PATH" \
-	WHISPER_MODEL_PATH="$(abspath $(WHISPER_MODEL_PATH))" \
-	go test -v -tags whisper -race -count=1 ./pkg/stt/... -coverprofile=cover.out
-
-$(MODEL_PATH):
-	@echo "Downloading ggml-small.bin model..."
-	wget -O $(MODEL_PATH) $(MODEL_URL)
-	@echo "Model downloaded to $(MODEL_PATH)"
-
-.PHONY: test-gowhisper
-test-gowhisper:
-	@CGO_ENABLED=1 go test -v -count=1 -race -tags=integration ./tests/...
-
-# lint: .golangci.yml has `build-tags: [..., whisper]`, so the typechecker
-# follows whisper.go's `#include <whisper.h>`. Without CGO_CFLAGS pointing
-# at whisper.cpp/include the import fails to compile and the run aborts.
-# Mirror build-whisper's env so lint sees the same headers/libs.
-.PHONY: lint
-lint:
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml
-
-.PHONY: lint-fix
-lint-fix:
-	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml --fix
-
-.PHONY: deps
-deps:
-	go mod tidy
-	go mod download
-
-# --- Whisper ---
-
-.PHONY: whisper-deps
-whisper-deps:
-	@command -v gcc    >/dev/null || (echo "Please install gcc"    && exit 1)
-	@command -v g++    >/dev/null || (echo "Please install g++"    && exit 1)
-	@command -v cmake  >/dev/null || (echo "Please install cmake"  && exit 1)
-	@command -v ffmpeg >/dev/null || (echo "Please install ffmpeg" && exit 1)
-	@echo "All system dependencies found"
-
-.PHONY: whisper-submodule
-whisper-submodule:
-	git submodule update --init --recursive
-
+# --- whisper.cpp static libraries ---
+# BUILD_SHARED_LIBS=OFF gives static archives (.a). The Go binary
+# pulls them in at link time, so the resulting bin/a2text is a single
+# self-contained file — no LD_LIBRARY_PATH wrapper, no extra .so to
+# install. libc/libstdc++/libGL/libX11 still come from the system as
+# normal dynamic deps; that's the standard Linux desktop pattern.
 $(WHISPER_LIB):
 	git submodule update --init --recursive
-	@echo "Building whisper.cpp shared library..."
-	cd $(WHISPER_DIR) && cmake -B build -DBUILD_SHARED_LIBS=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF
+	cd $(WHISPER_DIR) && cmake -B build \
+	    -DBUILD_SHARED_LIBS=OFF \
+	    -DWHISPER_BUILD_TESTS=OFF \
+	    -DWHISPER_BUILD_EXAMPLES=OFF
 	cd $(WHISPER_DIR) && cmake --build build --config Release
 
-.PHONY: whisper-build
-whisper-build: $(WHISPER_LIB)
+# --- Build (always with whisper.cpp + PipeWire CGO support) ---
 
-.PHONY: model-download
-model-download: $(MODEL_PATH)
-
-# --- go-whisper (Docker Compose) ---
-
-COMPOSE_FILE    := .ci/docker/docker-compose.yml
-COMPOSE_PROJECT := a2text
-COMPOSE         := docker compose -p $(COMPOSE_PROJECT) -f $(COMPOSE_FILE)
-
-.PHONY: dev-up
-dev-up:
-	$(COMPOSE) up -d --remove-orphans go-whisper
-
-.PHONY: dev-down
-dev-down:
-	$(COMPOSE) down
-
-.PHONY: models-pull
-models-pull:
-	@for model in $(GO_WHISPER_MODELS); do \
-		echo "==> pulling $$model via $(GO_WHISPER_URL)"; \
-		curl -fsS -N \
-			-H "Accept: text/event-stream" \
-			-H "Content-Type: application/json" \
-			-X POST \
-			-d "{\"model\":\"$$model\"}" \
-			$(GO_WHISPER_URL)/api/whisper/model || exit 1; \
-		echo; \
-	done
-
-.PHONY: models-list
-models-list:
-	@curl -fsS $(GO_WHISPER_URL)/api/whisper/model
+.PHONY: build
+build: $(WHISPER_LIB)
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
+	go build -tags whisper -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 # --- Install ---
+#
+# whisper.cpp is linked statically, so the Go binary is fully
+# self-contained — drop it into $PREFIX/bin and you're done.
 
-# install: build the binary and register it as a desktop app.
-# The .desktop file (Exec=/usr/local/bin/a2text) must match the installed path
-# so xdg-desktop-portal can identify the process and grant GlobalShortcuts.
 .PHONY: install
-install: build-whisper
-	install -Dm 755 $(BIN_DIR)/$(BINARY_NAME) $(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME)
-	sed "s|Exec=.*|Exec=$(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME)|" \
-		dist/a2text.desktop > /tmp/a2text.desktop
+install: build install-desktop
+	install -Dm 755 $(BIN_DIR)/$(BINARY_NAME) $(BIN_OUT)
+
+# install-desktop ships the freedesktop.org .desktop entry so the app
+# shows up in the application menu. Only meaningful on Linux/BSD where
+# $XDG_DATA_HOME/applications is honoured; on macOS/Windows we no-op
+# with a hint so `make install` does not fail there.
+.PHONY: install-desktop
+install-desktop:
+ifeq ($(filter $(UNAME_S),Linux FreeBSD OpenBSD NetBSD DragonFly),)
+	@echo "install-desktop: skipping — no XDG desktop entry support on $(UNAME_S)"
+else
+	sed "s|Exec=.*|Exec=$(BIN_OUT)|" dist/a2text.desktop > /tmp/a2text.desktop
 	install -Dm 644 /tmp/a2text.desktop $(XDG_DATA_HOME)/applications/a2text.desktop
 	rm -f /tmp/a2text.desktop
 	update-desktop-database $(XDG_DATA_HOME)/applications/ 2>/dev/null || true
-	@if [ ! -f $(XDG_CONFIG_HOME)/a2text/config.yaml ]; then \
-		install -Dm 644 app/config.yaml $(XDG_CONFIG_HOME)/a2text/config.yaml; \
-		echo "Default config written to $(XDG_CONFIG_HOME)/a2text/config.yaml"; \
-	else \
-		echo "Config already exists at $(XDG_CONFIG_HOME)/a2text/config.yaml — skipping"; \
-	fi
+endif
 
 .PHONY: uninstall
-uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME)
+uninstall: uninstall-desktop
+	rm -f $(BIN_OUT)
+
+.PHONY: uninstall-desktop
+uninstall-desktop:
+ifeq ($(filter $(UNAME_S),Linux FreeBSD OpenBSD NetBSD DragonFly),)
+	@echo "uninstall-desktop: skipping — no XDG desktop entry support on $(UNAME_S)"
+else
 	rm -f $(XDG_DATA_HOME)/applications/a2text.desktop
 	update-desktop-database $(XDG_DATA_HOME)/applications/ 2>/dev/null || true
+endif
 
-# install-hotkey: register the global keyboard shortcut via `a2text setup`.
-# Requires the binary to be installed first (make install).
-.PHONY: install-hotkey
-install-hotkey:
-	$(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME) setup
+.PHONY: gen
+# Runs all //go:generate directives in the repo. Currently regenerates
+# internal/i18n/keys.gen.go from messages/en.toml. Required before test
+# and lint so generated artefacts stay in sync with their sources.
+gen:
+	go generate ./...
 
-# uninstall-hotkey: remove the keyboard shortcut registered by install-hotkey.
-.PHONY: uninstall-hotkey
-uninstall-hotkey:
-	$(DESTDIR)$(PREFIX)/bin/$(BINARY_NAME) setup --undo
+# --- Test / Lint ---
+
+.PHONY: test
+test: gen $(WHISPER_LIB)
+	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
+	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR)/build/ggml/src:$$LD_LIBRARY_PATH" \
+	go test -tags whisper -count=1 -race ./...
+
+.PHONY: test-integration
+test-integration: gen $(WHISPER_LIB)
+	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
+	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR)/build/ggml/src:$$LD_LIBRARY_PATH" \
+	go test -tags integration,x11,linux,whisper -count=1 -race ./...
+
+.PHONY: lint
+lint: gen
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml
+
+.PHONY: lint-fix
+lint-fix: gen
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml --fix
 
 # --- go.mk bootstrap ---
 

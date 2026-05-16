@@ -31,6 +31,13 @@ type WhisperTranscriber struct {
 	ctx       *C.struct_whisper_context
 	modelPath string // last successfully loaded model path for rollback
 	log       *slog.Logger
+
+	// fullHook is a per-instance test seam: when non-nil, Transcribe
+	// uses *fullHook as the return code instead of calling whisper_full.
+	// Protected by mu — read inside the same lock that guards w.ctx.
+	// Replaces the previous package-global hook to keep parallel tests
+	// isolated.
+	fullHook *int
 }
 
 // NewWhisperTranscriber creates a new WhisperTranscriber.
@@ -41,6 +48,17 @@ func NewWhisperTranscriber(log *slog.Logger) *WhisperTranscriber {
 	}
 
 	return &WhisperTranscriber{log: log}
+}
+
+// SetWhisperFullHook installs a per-instance test seam: when hook is
+// non-nil, Transcribe substitutes *hook for the whisper_full return code
+// instead of calling the C function. Pass nil to remove the seam.
+// Safe for concurrent use; the hook is read under w.mu.
+func (w *WhisperTranscriber) SetWhisperFullHook(hook *int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.fullHook = hook
 }
 
 // LoadModel loads a whisper GGML model from path. It is safe to call while
@@ -187,8 +205,8 @@ func (w *WhisperTranscriber) Transcribe(ctx context.Context, wavPath string, lan
 	// whisper_full blocks until the entire file is processed; ctx cancellation
 	// cannot interrupt it once started.
 	var ret int
-	if hook := getWhisperFullHook(); hook != nil {
-		ret = *hook
+	if w.fullHook != nil {
+		ret = *w.fullHook
 	} else {
 		ret = int(C.whisper_full(w.ctx, params, (*C.float)(unsafe.Pointer(&samples[0])), C.int(len(samples))))
 	}

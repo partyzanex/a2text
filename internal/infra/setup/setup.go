@@ -17,11 +17,33 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
+
+// resolveLauncherPath returns the user-facing CLI wrapper path when the
+// running executable is the inner a2text.bin under $PREFIX/lib/a2text/.
+// Falls back to execPath when no wrapper is found. GNOME records this
+// path in custom-keybindings, so it must be the wrapper that exports
+// LD_LIBRARY_PATH before exec'ing the real binary.
+func resolveLauncherPath(execPath string) string {
+	dir := filepath.Dir(execPath)
+	if filepath.Base(dir) != "a2text" || filepath.Base(filepath.Dir(dir)) != "lib" {
+		return execPath
+	}
+
+	prefix := filepath.Dir(filepath.Dir(dir))
+
+	wrapper := filepath.Join(prefix, "bin", "a2text")
+	if info, err := os.Stat(wrapper); err == nil && !info.IsDir() {
+		return wrapper
+	}
+
+	return execPath
+}
 
 // gsettings path / schema constants.
 const (
@@ -96,6 +118,8 @@ func runSetup(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, rn
 	if err != nil {
 		return fmt.Errorf("setup: resolve binary path: %w", err)
 	}
+
+	execPath = resolveLauncherPath(execPath)
 
 	if err := setGNOMEBinding(ctx, rn, execPath, binding); err != nil {
 		return err

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -21,6 +22,7 @@ import (
 	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/pkg/gowhisper"
+	"github.com/partyzanex/a2text/pkg/stt"
 	"github.com/partyzanex/a2text/pkg/whispercpp"
 )
 
@@ -42,69 +44,82 @@ type ModelDownloader interface {
 // Stores the three provider-specific cards on ff so applyProviderVisibility
 // can later show only the card matching the current provider.
 func (w *Window) buildSTTTab(ff *formFields) fyne.CanvasObject {
-	general := rowsCard(i18n.T("card.general"),
-		formRowWithHelp(i18n.T("label.stt_provider"), "help.stt_provider", ff.provider),
-		formRowWithHelp(i18n.T("label.stt_language"), "help.stt_language", ff.language),
-		formRowWithHelp(i18n.T("label.ui_language"), "help.ui_language", ff.uiLanguage),
+	general := rowsCard(i18n.T(i18n.KeyCardGeneral),
+		formRowWithHelp(i18n.T(i18n.KeyLabelSttProvider), "help.stt_provider", ff.provider),
+		formRowWithHelp(i18n.T(i18n.KeyLabelSttLanguage), "help.stt_language", ff.language),
+		formRowWithHelp(i18n.T(i18n.KeyLabelUiLanguage), "help.ui_language", ff.uiLanguage),
 	)
 
 	ff.whisperCheckBtn.OnTapped = func() { w.onCheckGoWhisper(ff) }
 
-	ff.goWhisperCard = rowsCard(i18n.T("card.go_whisper"),
-		formRowValidatedWithTrailingButton(i18n.T("label.url"), "help.gw_url",
+	ff.goWhisperCard = rowsCard(i18n.T(i18n.KeyCardGoWhisper),
+		formRowValidatedWithTrailingButton(i18n.T(i18n.KeyLabelUrl), "help.gw_url",
 			ff.whisperURL, ff.whisperCheckBtn, ff.whisperCheckStatus,
 			validateRequiredHTTPURL),
-		formRowWithHelp(i18n.T("label.model"), "help.gw_model", ff.whisperModel),
-		formRowValidatedWithHelp(i18n.T("label.timeout"), "help.gw_timeout",
+		formRowWithHelp(i18n.T(i18n.KeyLabelModel), "help.gw_model", ff.whisperModel),
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelTimeout), "help.gw_timeout",
 			ff.whisperTimeout, validateDuration),
-		formRowWithHelp(i18n.T("label.auto_download"), "help.gw_auto_download",
+		formRowWithHelp(i18n.T(i18n.KeyLabelAutoDownload), "help.gw_auto_download",
 			leftAlign(ff.whisperAutoDownload)),
 	)
 
-	ff.whisperCppCard = rowsCard(i18n.T("card.whisper_cpp"),
-		formRowWithHelp(i18n.T("label.models_dir"), "help.cpp_models_dir",
+	ff.whisperCppCard = rowsCard(i18n.T(i18n.KeyCardWhisperCpp),
+		formRowWithHelp(i18n.T(i18n.KeyLabelModelsDir), "help.cpp_models_dir",
 			w.buildWhisperCppModelsDirField(ff)),
-		formRowWithHelp(i18n.T("label.model"), "help.cpp_model_select", ff.whisperCppModel),
-		formRowSelectEntryValidatedWithHelp(
-			i18n.T("label.model_path"), "help.cpp_model_path",
-			ff.modelPath, validateWhisperCppModelPath,
-		),
+		formRowWithHelp(i18n.T(i18n.KeyLabelModel), "help.cpp_model_select", ff.whisperCppModel),
 		w.buildModelDownloadRow(ff),
 	)
 
-	ff.cloudCard = rowsCard(i18n.T("card.cloud"),
-		formRowWithHelp(i18n.T("label.cloud_provider"), "help.cloud_provider", ff.cloudProvider),
-		formRowWithHelp(i18n.T("label.api_key"), "help.cloud_api_key", ff.cloudAPIKey),
-		formRowValidatedWithHelp(i18n.T("label.base_url"), "help.cloud_base_url",
-			ff.cloudBaseURL, validateHTTPURL),
+	ff.openAICard = rowsCard(i18n.T(i18n.KeyCardOpenai),
+		formRowWithHelp(i18n.T(i18n.KeyLabelApiKey), "help.openai_api_key", ff.openAIAPIKey),
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelBaseUrl), "help.openai_base_url",
+			ff.openAIBaseURL, validateHTTPURL),
+		formRowWithHelp(i18n.T(i18n.KeyLabelModel), "help.openai_model", ff.openAIModel),
 	)
 
-	retry := rowsCard(i18n.T("card.stt_retry"),
-		formRowWithHelp(i18n.T("label.retry_enabled"), "help.retry_enabled",
+	balanceRow := container.NewBorder(nil, nil, nil, ff.deepgramRefresh, ff.deepgramBalance)
+
+	ff.deepgramCard = rowsCard(i18n.T(i18n.KeyCardDeepgram),
+		formRowWithHelp(i18n.T(i18n.KeyLabelApiKey), "help.deepgram_api_key", ff.deepgramAPIKey),
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelBaseUrl), "help.deepgram_base_url",
+			ff.deepgramBaseURL, validateHTTPURL),
+		formRowWithHelp(i18n.T(i18n.KeyLabelModel), "help.deepgram_model", ff.deepgramModel),
+		formRowWithHelp(i18n.T(i18n.KeyLabelDeepgramStreaming), "help.deepgram_streaming",
+			leftAlign(ff.deepgramStreaming)),
+		formRowWithHelp(i18n.T(i18n.KeyLabelDeepgramBalance), "help.deepgram_balance", balanceRow),
+	)
+
+	retry := rowsCard(i18n.T(i18n.KeyCardSttRetry),
+		formRowWithHelp(i18n.T(i18n.KeyLabelRetryEnabled), "help.retry_enabled",
 			leftAlign(ff.sttRetryEnabled)),
-		formRowValidatedWithHelp(i18n.T("label.retry_initial_delay"), "help.retry_initial_delay",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelRetryInitialDelay), "help.retry_initial_delay",
 			ff.sttRetryInitDelay, validateDuration),
-		formRowValidatedWithHelp(i18n.T("label.retry_max_delay"), "help.retry_max_delay",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelRetryMaxDelay), "help.retry_max_delay",
 			ff.sttRetryMaxDelay, validateDuration),
-		formRowValidatedWithHelp(i18n.T("label.retry_max_attempts"), "help.retry_max_attempts",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelRetryMaxAttempts), "help.retry_max_attempts",
 			ff.sttRetryMaxAttempts, validateNonNegativeInt),
 	)
 
-	return tabBody(general, ff.goWhisperCard, ff.whisperCppCard, ff.cloudCard, retry)
+	return tabBody(general, ff.goWhisperCard, ff.whisperCppCard, ff.openAICard, ff.deepgramCard, retry)
 }
 
 // buildSTTFieldWidgets creates STT-section widgets and returns an initialized formFields.
 func (w *Window) buildSTTFieldWidgets() *formFields {
-	apiKeyEntry := widget.NewEntry()
-	apiKeyEntry.Password = true
-	apiKeyEntry.SetText(w.cfg.CloudAPIKey)
+	openAIKeyEntry := widget.NewEntry()
+	openAIKeyEntry.Password = true
+	openAIKeyEntry.SetText(w.cfg.OpenAI.APIKey)
+
+	deepgramKeyEntry := widget.NewEntry()
+	deepgramKeyEntry.Password = true
+	deepgramKeyEntry.SetText(w.cfg.Deepgram.APIKey)
 
 	ff := &formFields{
 		provider: widget.NewSelect(
 			[]string{
 				config.VoiceProviderGoWhisper,
 				config.VoiceProviderWhisperCpp,
-				config.VoiceProviderCloud,
+				config.VoiceProviderOpenAI,
+				config.VoiceProviderDeepgram,
 			},
 			nil,
 		),
@@ -116,22 +131,256 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 		whisperAutoDownload: widget.NewCheck("", nil),
 		modelPath:           newWhisperCppModelPathEntry(w.cfg.ModelPath),
 		whisperCppModelsDir: entryWithText(w.cfg.WhisperCppModelsDir, ""),
-		whisperCppModel:     widget.NewSelect([]string{}, nil),
-		modelDownloadBtn:    widget.NewButton(i18n.T("button.download_model"), nil),
+		whisperCppModel:     widget.NewSelect(append([]string(nil), commonWhisperCppModels...), nil),
+		modelDownloadBtn:    widget.NewButton(i18n.T(i18n.KeyButtonDownloadModel), nil),
 		modelDownloadBar:    widget.NewProgressBar(),
 		modelDownloadMsg:    widget.NewLabel(""),
-		cloudProvider:       entryWithText(w.cfg.CloudProvider, "openai"),
-		cloudAPIKey:         apiKeyEntry,
-		cloudBaseURL:        entryWithText(w.cfg.CloudBaseURL, ""),
+		openAIAPIKey:        openAIKeyEntry,
+		openAIBaseURL:       entryWithText(w.cfg.OpenAI.BaseURL, ""),
+		openAIModel:         entryWithText(w.cfg.OpenAI.Model, "whisper-1"),
+		deepgramAPIKey:      deepgramKeyEntry,
+		deepgramBaseURL:     entryWithText(deepgramBaseURLOrDefault(w.cfg.Deepgram.BaseURL), stt.DeepgramDefaultBaseURL),
+		deepgramModel:       newDeepgramModelSelect(w.cfg.Deepgram.Model),
+		deepgramBalance:     widget.NewLabel("—"),
+		deepgramRefresh:     widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), nil),
+		deepgramStreaming:   widget.NewCheck("", nil),
 		sttRetryEnabled:     widget.NewCheck("", nil),
 		sttRetryInitDelay:   entryWithText(formatDuration(w.cfg.STTRetry.InitialDelay), "200ms"),
 		sttRetryMaxDelay:    entryWithText(formatDuration(w.cfg.STTRetry.MaxDelay), "5s"),
 		sttRetryMaxAttempts: entryWithText(intOrEmpty(w.cfg.STTRetry.MaxAttempts), "2"),
-		whisperCheckBtn:     widget.NewButton(i18n.T("button.check_connection"), nil),
+		whisperCheckBtn:     widget.NewButton(i18n.T(i18n.KeyButtonCheckConnection), nil),
 		whisperCheckStatus:  newStatusText(),
 	}
 
-	// Wire whisperCppModel selection → modelPath so dropdown choice is saved.
+	seedWhisperCppFromModelPath(ff, w.cfg.ModelPath)
+	wireWhisperCppModelChange(ff)
+	w.wireDeepgramModelFetch(ff)
+	w.wireDeepgramBalanceRefresh(ff)
+
+	return ff
+}
+
+// commonDeepgramModels seeds the dropdown before a live key is supplied so
+// the field is never empty. Replaced (merged) with the API-fetched list as
+// soon as a valid key is entered.
+//
+//nolint:gochecknoglobals // immutable seed list
+var commonDeepgramModels = []string{
+	"nova-2",
+	"nova-2-general",
+	"nova-2-meeting",
+	"nova-2-phonecall",
+	"nova-2-voicemail",
+	"enhanced",
+	"base",
+}
+
+// deepgramBaseURLOrDefault returns the saved Base URL, or the canonical
+// Deepgram URL when the saved value is blank. Used to prefill the entry so
+// the user sees the right value out of the box instead of an empty hint.
+func deepgramBaseURLOrDefault(current string) string {
+	if strings.TrimSpace(current) == "" {
+		return stt.DeepgramDefaultBaseURL
+	}
+
+	return current
+}
+
+// newDeepgramModelSelect builds the Deepgram model combobox seeded with
+// common preset names. The list is replaced/merged once an API key is
+// supplied (see wireDeepgramModelFetch).
+func newDeepgramModelSelect(current string) *widget.SelectEntry {
+	options := append([]string(nil), commonDeepgramModels...)
+	if current != "" && !slices.Contains(options, current) {
+		options = append(options, current)
+	}
+
+	entry := widget.NewSelectEntry(options)
+	entry.SetPlaceHolder("nova-2")
+
+	if current != "" {
+		entry.SetText(current)
+	} else {
+		entry.SetText("nova-2")
+	}
+
+	return entry
+}
+
+// wireDeepgramModelFetch debounces edits to the API-key entry and refreshes
+// the model dropdown by calling Deepgram's /v1/models endpoint. Errors are
+// logged at debug level; on failure the existing options stay in place so
+// users with a misconfigured key can still pick a model manually.
+func (w *Window) wireDeepgramModelFetch(ff *formFields) {
+	const debounce = 600 * time.Millisecond
+
+	var (
+		mu     sync.Mutex
+		timer  *time.Timer
+		cancel context.CancelFunc
+	)
+
+	trigger := func(apiKey, baseURL string) {
+		mu.Lock()
+
+		if cancel != nil {
+			cancel()
+		}
+
+		ctx, c := context.WithCancel(w.rootCtx())
+		cancel = c
+
+		mu.Unlock()
+
+		go w.refreshDeepgramModels(ctx, ff, apiKey, baseURL)
+	}
+
+	ff.deepgramAPIKey.OnChanged = func(value string) {
+		w.saver.Schedule()
+
+		key := strings.TrimSpace(value)
+		if key == "" {
+			return
+		}
+
+		mu.Lock()
+
+		if timer != nil {
+			timer.Stop()
+		}
+
+		baseURL := strings.TrimSpace(ff.deepgramBaseURL.Text)
+		timer = time.AfterFunc(debounce, func() { trigger(key, baseURL) })
+
+		mu.Unlock()
+	}
+}
+
+// refreshDeepgramModels probes the Deepgram models endpoint and updates the
+// dropdown in-place. Runs on a background goroutine; UI mutations are
+// marshalled through fyne.Do. On a successful probe it also triggers a
+// balance refresh — the key is known to be valid at that point.
+func (w *Window) refreshDeepgramModels(
+	ctx context.Context, ff *formFields, apiKey, baseURL string,
+) {
+	models, err := stt.FetchDeepgramModels(ctx, apiKey, baseURL)
+	if err != nil {
+		w.log.Debug("settings: deepgram model probe failed", slog.Any("err", err))
+
+		return
+	}
+
+	if len(models) > 0 {
+		fyne.Do(func() {
+			merged := mergeDeepgramOptions(models, ff.deepgramModel.Text)
+			ff.deepgramModel.SetOptions(merged)
+
+			w.log.Debug("settings: deepgram models refreshed",
+				slog.Int("count", len(models)),
+			)
+		})
+	}
+
+	// Key is valid → opportunistically refresh the balance caption too,
+	// so the user does not have to click the manual refresh button after
+	// every key change.
+	w.refreshDeepgramBalance(ctx, ff, apiKey, baseURL)
+}
+
+// wireDeepgramBalanceRefresh attaches the manual-refresh handler to the
+// reload icon next to the balance label. Background fetch + UI update is
+// identical to the auto-refresh path.
+func (w *Window) wireDeepgramBalanceRefresh(ff *formFields) {
+	ff.deepgramRefresh.OnTapped = func() {
+		key := strings.TrimSpace(ff.deepgramAPIKey.Text)
+		if key == "" {
+			ff.deepgramBalance.SetText(i18n.T(i18n.KeyBalanceNoKey))
+
+			return
+		}
+
+		baseURL := strings.TrimSpace(ff.deepgramBaseURL.Text)
+		ff.deepgramBalance.SetText(i18n.T(i18n.KeyBalanceLoading))
+
+		go w.refreshDeepgramBalance(w.rootCtx(), ff, key, baseURL)
+	}
+}
+
+// refreshDeepgramBalance pulls the project balance and updates the label.
+// Errors fall back to a "—" placeholder rather than alarming the user;
+// 403 is the common case (key lacks usage:read scope) and is not actionable
+// from inside the app.
+func (w *Window) refreshDeepgramBalance(
+	ctx context.Context, ff *formFields, apiKey, baseURL string,
+) {
+	balances, err := stt.FetchDeepgramBalance(ctx, apiKey, baseURL)
+	if err != nil {
+		w.log.Debug("settings: deepgram balance probe failed", slog.Any("err", err))
+
+		caption := i18n.T(i18n.KeyBalanceUnavailable)
+		if errors.Is(err, stt.ErrDeepgramInsufficientScope) {
+			caption = i18n.T(i18n.KeyBalanceNeedsScope)
+		}
+
+		fyne.Do(func() { ff.deepgramBalance.SetText(caption) })
+
+		return
+	}
+
+	caption := stt.FormatDeepgramBalances(balances)
+	if caption == "" {
+		caption = i18n.T(i18n.KeyBalanceEmpty)
+	}
+
+	fyne.Do(func() {
+		ff.deepgramBalance.SetText(caption)
+
+		w.log.Debug("settings: deepgram balance refreshed",
+			slog.String("caption", caption),
+		)
+	})
+}
+
+// mergeDeepgramOptions returns the fetched list with the currently-selected
+// value appended (if missing) so the user's pre-existing choice does not
+// disappear when the API returns a different set of canonical names.
+func mergeDeepgramOptions(fetched []string, current string) []string {
+	out := append([]string(nil), fetched...)
+	current = strings.TrimSpace(current)
+
+	if current != "" && !slices.Contains(out, current) {
+		out = append(out, current)
+	}
+
+	return out
+}
+
+// seedWhisperCppFromModelPath splits cfg.ModelPath into dir + filename and
+// pre-fills the models-dir entry / select so the user lands on the model
+// they currently have configured.
+func seedWhisperCppFromModelPath(ff *formFields, modelPath string) {
+	if modelPath == "" {
+		return
+	}
+
+	modelDir, modelName := filepath.Split(modelPath)
+	modelDir = strings.TrimRight(modelDir, string(filepath.Separator))
+
+	if ff.whisperCppModelsDir.Text == "" && modelDir != "" {
+		ff.whisperCppModelsDir.SetText(modelDir)
+	}
+
+	if !slices.Contains(ff.whisperCppModel.Options, modelName) {
+		ff.whisperCppModel.Options = append(ff.whisperCppModel.Options, modelName)
+	}
+
+	ff.whisperCppModel.SetSelected(modelName)
+}
+
+// wireWhisperCppModelChange installs the OnChanged hook that composes
+// modelPath = join(models_dir, selected) — the hidden modelPath entry is
+// the source of truth saved into cfg.ModelPath.
+func wireWhisperCppModelChange(ff *formFields) {
 	ff.whisperCppModel.OnChanged = func(name string) {
 		if name == "" {
 			return
@@ -150,8 +399,6 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 
 		ff.modelPath.SetText(filepath.Join(dir, name))
 	}
-
-	return ff
 }
 
 // applySTTFields writes STT-related form values back to the config.
@@ -165,11 +412,19 @@ func (w *Window) applySTTFields(ff *formFields) {
 	w.cfg.GoWhisper.AutoDownload = ff.whisperAutoDownload.Checked
 	w.cfg.ModelPath = ff.modelPath.Text
 	w.cfg.WhisperCppModelsDir = ff.whisperCppModelsDir.Text
-	w.cfg.CloudProvider = ff.cloudProvider.Text
-	w.cfg.CloudBaseURL = ff.cloudBaseURL.Text
+	w.cfg.OpenAI.BaseURL = ff.openAIBaseURL.Text
+	w.cfg.OpenAI.Model = ff.openAIModel.Text
 
-	if ff.cloudAPIKey.Text != "" {
-		w.cfg.CloudAPIKey = ff.cloudAPIKey.Text
+	if ff.openAIAPIKey.Text != "" {
+		w.cfg.OpenAI.APIKey = ff.openAIAPIKey.Text
+	}
+
+	w.cfg.Deepgram.BaseURL = ff.deepgramBaseURL.Text
+	w.cfg.Deepgram.Model = ff.deepgramModel.Text
+	w.cfg.Deepgram.Streaming = ff.deepgramStreaming.Checked
+
+	if ff.deepgramAPIKey.Text != "" {
+		w.cfg.Deepgram.APIKey = ff.deepgramAPIKey.Text
 	}
 
 	w.cfg.STTRetry.Enabled = ff.sttRetryEnabled.Checked
@@ -179,26 +434,23 @@ func (w *Window) applySTTFields(ff *formFields) {
 }
 
 // applyProviderVisibility shows the STT card matching ff.provider.Selected
-// and hides the other two.
+// and hides the others.
 func applyProviderVisibility(ff *formFields) {
 	cards := map[string]fyne.CanvasObject{
 		config.VoiceProviderGoWhisper:  ff.goWhisperCard,
 		config.VoiceProviderWhisperCpp: ff.whisperCppCard,
-		config.VoiceProviderCloud:      ff.cloudCard,
+		config.VoiceProviderOpenAI:     ff.openAICard,
+		config.VoiceProviderDeepgram:   ff.deepgramCard,
 	}
 
-	selected := ff.provider.Selected
-
-	for provider, card := range cards {
-		if card == nil {
-			continue
-		}
-
-		if provider == selected {
-			card.Show()
-		} else {
+	for _, card := range cards {
+		if card != nil {
 			card.Hide()
 		}
+	}
+
+	if card := cards[ff.provider.Selected]; card != nil {
+		card.Show()
 	}
 }
 
@@ -226,7 +478,7 @@ func (w *Window) onCheckGoWhisper(ff *formFields) {
 		slog.String("url", targetURL),
 		slog.Duration("timeout", checkTimeout),
 	)
-	setStatusText(ff.whisperCheckStatus, i18n.T("check.status.in_progress"), statusKindNeutral)
+	setStatusText(ff.whisperCheckStatus, i18n.T(i18n.KeyCheckStatusInProgress), statusKindNeutral)
 	ff.whisperCheckBtn.Disable()
 
 	go func() {
@@ -240,7 +492,7 @@ func (w *Window) onCheckGoWhisper(ff *formFields) {
 					slog.String("url", targetURL),
 					slog.Any("err", err),
 				)
-				setStatusText(ff.whisperCheckStatus, i18n.T("check.status.failed"), statusKindError)
+				setStatusText(ff.whisperCheckStatus, i18n.T(i18n.KeyCheckStatusFailed), statusKindError)
 
 				return
 			}
@@ -253,8 +505,8 @@ func (w *Window) onCheckGoWhisper(ff *formFields) {
 			)
 
 			msg := fmt.Sprintf("%s (%d %s, %s)",
-				i18n.T("check.status.ok"),
-				len(res.Models), i18n.T("check.models"),
+				i18n.T(i18n.KeyCheckStatusOk),
+				len(res.Models), i18n.T(i18n.KeyCheckModels),
 				res.Elapsed.Truncate(time.Millisecond),
 			)
 			setStatusText(ff.whisperCheckStatus, msg, statusKindSuccess)
@@ -293,16 +545,24 @@ func (w *Window) onDownloadModel(ff *formFields) {
 	current := strings.TrimSpace(ff.modelPath.Text)
 	if current == "" {
 		w.downloadMu.Unlock()
-		w.setDownloadMessage(ff, i18n.T("download.error.empty_path"), true)
+		w.setDownloadMessage(ff, i18n.T(i18n.KeyDownloadErrorEmptyPath), true)
 
 		return
 	}
 
 	modelFile := filepath.Base(current)
 
-	destDir := whisperCppModelsDir()
+	// Prefer the user-selected models directory; fall back to the directory
+	// of the composed model path, then to the XDG default. Without this the
+	// download silently lands in the XDG location while the UI shows a
+	// different folder — confusing when the picked folder is on another disk.
+	destDir := strings.TrimSpace(ff.whisperCppModelsDir.Text)
 	if destDir == "" {
 		destDir = filepath.Dir(current)
+	}
+
+	if destDir == "" || destDir == "." {
+		destDir = whisperCppModelsDir()
 	}
 
 	// Fyne's OnTapped callback takes no parameters, so we cannot accept
@@ -323,8 +583,13 @@ func (w *Window) onDownloadModel(ff *formFields) {
 
 	ff.modelDownloadBar.SetValue(0)
 	ff.modelDownloadBar.Show()
-	ff.modelDownloadBtn.SetText(i18n.T("button.download_cancel"))
-	w.setDownloadMessage(ff, i18n.T("download.status.starting"), false)
+	ff.modelDownloadBtn.SetText(i18n.T(i18n.KeyButtonDownloadCancel))
+	w.setDownloadMessage(ff, i18n.T(i18n.KeyDownloadStatusStarting), false)
+
+	w.log.Debug("settings: model download started",
+		slog.String("model", modelFile),
+		slog.String("dest_dir", destDir),
+	)
 
 	go w.runDownload(ctx, ff, dl, modelFile, destDir)
 }
@@ -344,7 +609,7 @@ func (w *Window) runDownload(
 
 		fyne.Do(func() {
 			ff.modelDownloadBar.Hide()
-			ff.modelDownloadBtn.SetText(i18n.T("button.download_model"))
+			ff.modelDownloadBtn.SetText(i18n.T(i18n.KeyButtonDownloadModel))
 		})
 	}()
 
@@ -359,23 +624,28 @@ func (w *Window) runDownload(
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			fyne.Do(func() { w.setDownloadMessage(ff, i18n.T("download.status.cancelled"), false) })
+			fyne.Do(func() { w.setDownloadMessage(ff, i18n.T(i18n.KeyDownloadStatusCancelled), false) })
 
 			return
 		}
 
 		w.log.Warn("settings: model download failed", slog.Any("err", err))
 		fyne.Do(func() {
-			msg := fmt.Sprintf("%s: %v", i18n.T("download.status.failed"), err)
+			msg := fmt.Sprintf("%s: %v", i18n.T(i18n.KeyDownloadStatusFailed), err)
 			w.setDownloadMessage(ff, msg, true)
 		})
 
 		return
 	}
 
+	w.log.Debug("settings: model download finished",
+		slog.String("model", modelFile),
+		slog.String("path", path),
+	)
+
 	fyne.Do(func() {
 		ff.modelPath.SetText(path)
-		w.setDownloadMessage(ff, i18n.T("download.status.done"), false)
+		w.setDownloadMessage(ff, i18n.T(i18n.KeyDownloadStatusDone), false)
 
 		if w.saver != nil {
 			w.saver.Schedule()
@@ -580,13 +850,29 @@ func (w *Window) openFyneFolderDialogForWhisperCppModels(ff *formFields) {
 	dirDialog.Show()
 }
 
-// updateWhisperCppModelSelect updates the model select with available models from the given directory.
+// updateWhisperCppModelSelect refreshes the model select: hardcoded common
+// models are always present; on-disk .bin files in dir are merged in.
 func (w *Window) updateWhisperCppModelSelect(ff *formFields, dir string) {
-	models := scanWhisperCppModels(dir)
+	seen := make(map[string]struct{}, len(commonWhisperCppModels))
+	options := make([]string, 0, len(commonWhisperCppModels))
 
-	ff.whisperCppModel.Options = models
-	if len(models) > 0 && ff.whisperCppModel.Selected == "" {
-		ff.whisperCppModel.SetSelected(models[0])
+	for _, name := range commonWhisperCppModels {
+		seen[name] = struct{}{}
+
+		options = append(options, name)
+	}
+
+	for _, name := range scanWhisperCppModels(dir) {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+
+		options = append(options, name)
+	}
+
+	ff.whisperCppModel.Options = options
+	if len(options) > 0 && ff.whisperCppModel.Selected == "" {
+		ff.whisperCppModel.SetSelected(options[0])
 	}
 
 	ff.whisperCppModel.Refresh()
@@ -644,19 +930,19 @@ func validateModelFileMeta(value string) error {
 
 	info, err := os.Stat(value)
 	if err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.model_path_stat_failed"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationModelPathStatFailed), err)
 	}
 
 	if info.IsDir() {
-		return errors.New(i18n.T("validation.model_path_is_dir"))
+		return errors.New(i18n.T(i18n.KeyValidationModelPathIsDir))
 	}
 
 	if !info.Mode().IsRegular() {
-		return errors.New(i18n.T("validation.model_path_not_regular"))
+		return errors.New(i18n.T(i18n.KeyValidationModelPathNotRegular))
 	}
 
 	if info.Size() < minModelSizeBytes {
-		return errors.New(i18n.T("validation.model_path_too_small"))
+		return errors.New(i18n.T(i18n.KeyValidationModelPathTooSmall))
 	}
 
 	return nil
@@ -669,7 +955,7 @@ func validateModelFileMagic(value string) (retErr error) {
 
 	file, err := os.Open(filepath.Clean(value))
 	if err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.model_path_open_failed"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationModelPathOpenFailed), err)
 	}
 
 	defer func() {
@@ -680,11 +966,11 @@ func validateModelFileMagic(value string) (retErr error) {
 
 	magic := make([]byte, magicSize)
 	if _, err := io.ReadFull(file, magic); err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.model_path_read_failed"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationModelPathReadFailed), err)
 	}
 
 	if !isWhisperModelMagic(magic) {
-		return errors.New(i18n.T("validation.model_path_bad_magic"))
+		return errors.New(i18n.T(i18n.KeyValidationModelPathBadMagic))
 	}
 
 	return nil

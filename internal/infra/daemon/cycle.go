@@ -4,11 +4,46 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/partyzanex/a2text/internal/domain"
+	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
+
+// providerModel returns the human-readable model identifier for the active
+// STT provider, used in cycle-completion logs.
+func providerModel(cfg *config.VoiceConfig) string {
+	if cfg == nil {
+		return ""
+	}
+
+	switch cfg.Provider {
+	case config.VoiceProviderGoWhisper:
+		return cfg.GoWhisper.Model
+	case config.VoiceProviderWhisperCpp:
+		if cfg.ModelPath == "" {
+			return ""
+		}
+
+		return filepath.Base(cfg.ModelPath)
+	case config.VoiceProviderOpenAI:
+		if cfg.OpenAI.Model == "" {
+			return config.VoiceProviderOpenAI
+		}
+
+		return cfg.OpenAI.Model
+	case config.VoiceProviderDeepgram:
+		if cfg.Deepgram.Model == "" {
+			return cfg.Provider
+		}
+
+		return cfg.Deepgram.Model
+	default:
+		return ""
+	}
+}
 
 // startCycle kicks off a new dictation cycle in the background. It runs
 // record→transcribe→deliver as a single op and feeds completion events
@@ -114,8 +149,11 @@ func (d *Daemon) advanceCycleSuccess(result domain.CycleResult) {
 		textLen = []slog.Attr{slog.Int("text_len", len(result.Text))}
 	}
 
+	attrs := append([]slog.Attr{}, textLen...)
+	attrs = append(attrs, slog.String("model", providerModel(d.cfg)))
+
 	d.log.Info("voice: cycle completed",
-		voice.CycleAttrs(result, textLen...),
+		voice.CycleAttrs(result, attrs...),
 		slog.String("provider", d.cfg.Provider),
 	)
 
@@ -123,7 +161,7 @@ func (d *Daemon) advanceCycleSuccess(result domain.CycleResult) {
 		// Emit the full transcript at DEBUG so it appears in dev logs without
 		// polluting INFO-level journal entries.
 		d.log.Debug("voice: transcript",
-			slog.String("model", d.cfg.GoWhisper.Model),
+			slog.String("model", providerModel(d.cfg)),
 			slog.String("text", result.Text),
 		)
 	}

@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"github.com/partyzanex/a2text/internal/adapters/ipc"
+	"github.com/partyzanex/a2text/internal/adapters/settings"
+	"github.com/partyzanex/a2text/internal/adapters/tray"
 	"github.com/partyzanex/a2text/internal/domain"
 	"github.com/partyzanex/a2text/internal/i18n"
+	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/setup"
 	"github.com/partyzanex/a2text/internal/infra/sysd"
-	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/adapters/settings"
-	"github.com/partyzanex/a2text/internal/adapters/tray"
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
@@ -205,25 +205,28 @@ func logToggleResult(ctx context.Context, log *slog.Logger, resp *ipc.Response) 
 }
 
 // checkDaemonDeps runs depcheck and logs any missing dependencies.
-// Returns fatal error if required dependencies are missing.
-func checkDaemonDeps(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) error {
+// Missing required deps are logged but do NOT abort startup: the daemon
+// brings up the tray + settings UI in a degraded state so the user can
+// configure a working provider. The transcriber path returns a lazy error
+// until deps are satisfied and the daemon is restarted.
+func checkDaemonDeps(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) {
 	results, fatal := RunDepCheck(ctx, cfg, io.Discard, log)
-	if fatal {
-		for i := range results {
-			res := &results[i]
-			if !res.Found && !res.Optional {
-				log.Error("voice: missing required dependency",
-					slog.String("group", res.Group),
-					slog.String("name", res.Name),
-					slog.String("install_tip", res.InstallTip),
-				)
-			}
-		}
-
-		return ErrDepcheckFailed
+	if !fatal {
+		return
 	}
 
-	return nil
+	for i := range results {
+		res := &results[i]
+		if !res.Found && !res.Optional {
+			log.Error("voice: missing required dependency",
+				slog.String("group", res.Group),
+				slog.String("name", res.Name),
+				slog.String("install_tip", res.InstallTip),
+			)
+		}
+	}
+
+	log.Warn("voice: starting in degraded mode — fix deps via settings UI and restart")
 }
 
 // runDaemon performs depcheck, builds the daemon, and serves until SIGTERM.
@@ -237,9 +240,7 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 		return errors.New("daemon: nil config")
 	}
 
-	if err := checkDaemonDeps(ctx, cfg, log); err != nil {
-		return err
-	}
+	checkDaemonDeps(ctx, cfg, log)
 
 	CleanOrphanDirs(cfg.TempDir, log)
 

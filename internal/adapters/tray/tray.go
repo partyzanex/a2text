@@ -148,12 +148,12 @@ func (tr *Tray) Run(ctx context.Context) {
 		systray.SetIcon(tr.iconFor(domain.StateIdle))
 		systray.SetTooltip("a2text: idle")
 
-		mToggle := systray.AddMenuItem(i18n.T("tray.toggle"), "")
-		mSettings := systray.AddMenuItem(i18n.T("tray.settings"), "")
+		mToggle := systray.AddMenuItem(i18n.T(i18n.KeyTrayToggle), "")
+		mSettings := systray.AddMenuItem(i18n.T(i18n.KeyTraySettings), "")
 
 		systray.AddSeparator()
 
-		mQuit := systray.AddMenuItem(i18n.T("tray.quit"), "")
+		mQuit := systray.AddMenuItem(i18n.T(i18n.KeyTrayQuit), "")
 
 		go tr.loop(ctx, mToggle, mSettings, mQuit)
 	}, func() {})

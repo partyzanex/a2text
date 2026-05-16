@@ -9,8 +9,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/adapters/ui"
+	"github.com/partyzanex/a2text/internal/i18n"
 )
 
 // formRow builds a single settings row: a fixed-width, right-aligned label
@@ -23,6 +23,41 @@ import (
 // to the settings window's two-column layout.
 func formRow(label string, field fyne.CanvasObject) *fyne.Container {
 	return formRowWithHelp(label, "", field)
+}
+
+// newErrorCaption returns a word-wrapping error caption: long validator
+// messages flow onto multiple lines instead of stretching the form row.
+func newErrorCaption() *widget.RichText {
+	caption := widget.NewRichText()
+	caption.Wrapping = fyne.TextWrapWord
+	caption.Hide()
+
+	return caption
+}
+
+// setErrorCaption renders msg in the caption with theme error colour and
+// caption-sized text. Empty msg hides the widget so it consumes no space.
+func setErrorCaption(caption *widget.RichText, msg string) {
+	if msg == "" {
+		caption.Segments = nil
+		caption.Hide()
+		caption.Refresh()
+
+		return
+	}
+
+	caption.Segments = []widget.RichTextSegment{
+		&widget.TextSegment{
+			Text: msg,
+			Style: widget.RichTextStyle{
+				ColorName: theme.ColorNameError,
+				SizeName:  theme.SizeNameCaptionText,
+			},
+		},
+	}
+
+	caption.Show()
+	caption.Refresh()
 }
 
 // formRowWithHelp is formRow with a non-empty help i18n key attached. The
@@ -63,54 +98,6 @@ func buildLabelBox(label, helpKey string) fyne.CanvasObject {
 	)
 }
 
-// formRowSelectEntryValidatedWithHelp is the SelectEntry-aware twin of
-// formRowValidatedWithHelp. SelectEntry is a composite (Entry +
-// dropdown button); passing its embedded Entry to the regular helper
-// orphans the dropdown and any later tap on it nil-panics inside
-// NewPopUpMenu because the dropdown was never attached to a canvas.
-// This helper places the full SelectEntry in the row and wires the
-// validator + error caption around the embedded Entry directly.
-func formRowSelectEntryValidatedWithHelp(
-	label, helpKey string,
-	selectEntry *widget.SelectEntry,
-	validator fyne.StringValidator,
-) *fyne.Container {
-	selectEntry.Validator = validator
-
-	errText := canvas.NewText("", errorTextColor())
-	errText.TextSize = ui.SectionHeaderTextSize
-	errText.Hide()
-
-	selectEntry.SetOnValidationChanged(func(err error) {
-		if err == nil {
-			errText.Text = ""
-			errText.Hide()
-			errText.Refresh()
-
-			return
-		}
-
-		errText.Text = err.Error()
-		errText.Show()
-		errText.Refresh()
-	})
-
-	if validator != nil {
-		// Initial validation pass so a stale invalid value lights up
-		// red immediately rather than waiting for the first keystroke.
-		if validateErr := selectEntry.Validate(); validateErr != nil {
-			errText.Text = validateErr.Error()
-			errText.Show()
-			errText.Refresh()
-		}
-	}
-
-	field := container.NewVBox(selectEntry, errText)
-	lblBox := buildLabelBox(label, helpKey)
-
-	return container.NewBorder(nil, nil, lblBox, nil, field)
-}
-
 // formRowValidatedWithHelp is formRow plus inline validation feedback:
 // the entry gets the supplied Validator (Fyne paints the entry red when
 // validation fails), and a small error-coloured caption sits below the
@@ -123,22 +110,16 @@ func formRowValidatedWithHelp(
 ) *fyne.Container {
 	entry.Validator = validator
 
-	errText := canvas.NewText("", errorTextColor())
-	errText.TextSize = ui.SectionHeaderTextSize
-	errText.Hide()
+	errText := newErrorCaption()
 
 	entry.SetOnValidationChanged(func(err error) {
 		if err == nil {
-			errText.Text = ""
-			errText.Hide()
-			errText.Refresh()
+			setErrorCaption(errText, "")
 
 			return
 		}
 
-		errText.Text = err.Error()
-		errText.Show()
-		errText.Refresh()
+		setErrorCaption(errText, err.Error())
 	})
 
 	if validator != nil {
@@ -174,22 +155,16 @@ func formRowValidatedWithTrailingButton(
 ) *fyne.Container {
 	entry.Validator = validator
 
-	errText := canvas.NewText("", errorTextColor())
-	errText.TextSize = ui.SectionHeaderTextSize
-	errText.Hide()
+	errText := newErrorCaption()
 
 	entry.SetOnValidationChanged(func(err error) {
 		if err == nil {
-			errText.Text = ""
-			errText.Hide()
-			errText.Refresh()
+			setErrorCaption(errText, "")
 
 			return
 		}
 
-		errText.Text = err.Error()
-		errText.Show()
-		errText.Refresh()
+		setErrorCaption(errText, err.Error())
 	})
 
 	if validator != nil {
@@ -279,22 +254,4 @@ func statusColorFor(kind statusKind) color.Color {
 	default:
 		return themeRef.Color(theme.ColorNameForeground, variant)
 	}
-}
-
-// errorTextColor returns the foreground colour for inline validation
-// captions.
-func errorTextColor() color.Color {
-	const (
-		channelMax uint8 = 0xff
-		channelMid uint8 = 0x55
-	)
-
-	currentApp := fyne.CurrentApp()
-	if currentApp == nil {
-		return color.NRGBA{R: channelMax, G: channelMid, B: channelMid, A: channelMax}
-	}
-
-	return currentApp.Settings().Theme().Color(
-		theme.ColorNameError, currentApp.Settings().ThemeVariant(),
-	)
 }

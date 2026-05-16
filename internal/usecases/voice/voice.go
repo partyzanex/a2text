@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -140,31 +139,32 @@ func (uc *VoiceUseCase) Cycle(
 		return domain.CycleResult{}, fmt.Errorf("voice: cycle args: %w", err)
 	}
 
-	audioPath, audioSize, err := uc.recordAndValidate(recordCtx, opts)
-	if err != nil {
-		return domain.CycleResult{}, err
+	// Pre-snapshot the clipboard while the user is still talking. The
+	// snapshot runs on a goroutine inside the output; by the time we
+	// reach Deliver the result is already in place. Saves the ~300ms
+	// the wl-paste round-trip would otherwise spend on the hot path
+	// between stop and autopaste.
+	uc.preSnapshotClipboard(ctx)
+
+	if streamer := uc.streamingCapableTranscriber(); streamer != nil {
+		return uc.streamingCycle(ctx, recordCtx, streamer, opts, lang)
 	}
 
-	defer func() {
-		// Archive BEFORE removing the temp file. The archiver runs on
-		// the cycle ctx (not recordCtx) so toggling off during STT
-		// does not kill the archive copy; the daemon ctx still does
-		// at shutdown.
-		uc.runArchiver(ctx, audioPath)
+	return uc.sequentialCycle(ctx, recordCtx, opts, lang)
+}
 
-		if rmErr := os.Remove(audioPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			uc.log.Warn("voice: temp recording cleanup failed",
-				slog.String("file", filepath.Base(audioPath)),
-				slog.Any("err", rmErr),
-			)
-		}
-	}()
+// clipboardPreSnapshotter is the optional capability ClipboardAutopasteOutput
+// (and any future output) implements to allow voice.Cycle to start the
+// snapshot before delivery time. Defined as a structural interface so
+// usecases/voice does not import the output adapter package.
+type clipboardPreSnapshotter interface {
+	PreSnapshot(ctx context.Context)
+}
 
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return domain.CycleResult{}, &domain.CycleError{Phase: domain.PhaseTranscribe, Err: ctxErr}
+func (uc *VoiceUseCase) preSnapshotClipboard(ctx context.Context) {
+	if pre, ok := uc.output.(clipboardPreSnapshotter); ok {
+		pre.PreSnapshot(ctx)
 	}
-
-	return uc.transcribeAndDeliver(ctx, audioPath, audioSize, lang)
 }
 
 // runArchiver invokes the kept-audio archiver if one is wired,

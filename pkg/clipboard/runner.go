@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-//go:generate go run go.uber.org/mock/mockgen@latest -package=clipboard -destination=runner_mocks_test.go -source=runner.go
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=clipboard -destination=runner_mocks_test.go -source=runner.go
 
 // CopyRunner is the seam used to mock clipboard subprocess execution in tests.
 // Implemented by execCopyRunner; tests inject via this interface.

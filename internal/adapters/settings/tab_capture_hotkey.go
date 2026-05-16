@@ -15,30 +15,30 @@ import (
 // the cycle is initiated, and output determines where the result goes.
 // Together they form the complete recording-to-delivery pipeline.
 func (w *Window) buildCaptureHotkeyTab(ff *formFields) fyne.CanvasObject {
-	capture := rowsCard(i18n.T("card.capture_audio"),
-		formRowWithHelp(i18n.T("label.backend"), "help.capture_backend", ff.captureBackend),
-		formRowValidatedWithHelp(i18n.T("label.sample_rate"), "help.sample_rate",
+	capture := rowsCard(i18n.T(i18n.KeyCardCaptureAudio),
+		formRowWithHelp(i18n.T(i18n.KeyLabelBackend), "help.capture_backend", ff.captureBackend),
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelSampleRate), "help.sample_rate",
 			ff.captureSampleRate, validatePositiveInt),
-		formRowValidatedWithHelp(i18n.T("label.channels"), "help.channels",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelChannels), "help.channels",
 			ff.captureChannels, validatePositiveInt),
-		formRowValidatedWithHelp(i18n.T("label.max_duration"), "help.max_duration",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelMaxDuration), "help.max_duration",
 			ff.captureMaxDuration, validateDuration),
-		formRowValidatedWithHelp(i18n.T("label.silence_threshold"), "help.silence_threshold",
+		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelSilenceThreshold), "help.silence_threshold",
 			ff.captureSilenceThreshold, validateNonPositiveFloat),
 	)
 
-	hotkey := rowsCard(i18n.T("card.hotkey"),
-		formRowWithHelp(i18n.T("label.hotkey_enabled"), "help.hotkey_enabled",
+	hotkey := rowsCard(i18n.T(i18n.KeyCardHotkey),
+		formRowWithHelp(i18n.T(i18n.KeyLabelHotkeyEnabled), "help.hotkey_enabled",
 			leftAlign(ff.hotkeyEnabled)),
-		formRowWithHelp(i18n.T("label.hotkey_binding"), "help.hotkey_binding", ff.hotkeyBinding),
-		formRowWithHelp(i18n.T("label.mode"), "help.hotkey_mode", ff.hotkeyMode),
-		formRowWithHelp(i18n.T("label.backend"), "help.hotkey_backend", ff.hotkeyBackend),
+		formRowWithHelp(i18n.T(i18n.KeyLabelHotkeyBinding), "help.hotkey_binding", ff.hotkeyBinding),
+		formRowWithHelp(i18n.T(i18n.KeyLabelMode), "help.hotkey_mode", ff.hotkeyMode),
+		formRowWithHelp(i18n.T(i18n.KeyLabelBackend), "help.hotkey_backend", ff.hotkeyBackend),
 	)
 
-	output := rowsCard(i18n.T("card.output"),
-		formRowWithHelp(i18n.T("label.output_mode"), "help.output_mode", ff.outputMode),
-		formRowWithHelp(i18n.T("label.autopaste_command"), "help.autopaste_command", ff.autopaste),
-		formRowWithHelp(i18n.T("label.restore_clipboard"), "help.restore_clipboard",
+	output := rowsCard(i18n.T(i18n.KeyCardOutput),
+		formRowWithHelp(i18n.T(i18n.KeyLabelOutputMode), "help.output_mode", ff.outputMode),
+		formRowWithHelp(i18n.T(i18n.KeyLabelAutopasteCommand), "help.autopaste_command", ff.autopaste),
+		formRowWithHelp(i18n.T(i18n.KeyLabelRestoreClipboard), "help.restore_clipboard",
 			leftAlign(ff.restoreClipboard)),
 	)
 

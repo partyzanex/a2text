@@ -25,8 +25,8 @@ const cycleBaseAttrs = 2
 func CycleAttrs(result domain.CycleResult, extra ...slog.Attr) slog.Attr {
 	args := make([]any, 0, cycleBaseAttrs+len(extra))
 	args = append(args,
-		slog.Duration("audio_duration_est", result.AudioDuration),
-		slog.Duration("stt_duration", result.STTDuration),
+		slog.String("audio_duration_est", result.AudioDuration.String()),
+		slog.String("stt_duration", result.STTDuration.String()),
 	)
 
 	for i := range extra {

@@ -47,10 +47,14 @@ func BuildTranscriber(ctx context.Context, cfg *config.VoiceConfig, log *slog.Lo
 		GoWhisperModel:        cfg.GoWhisper.Model,
 		GoWhisperTimeout:      cfg.GoWhisper.Timeout,
 		GoWhisperAutoDownload: cfg.GoWhisper.AutoDownload,
-		CloudProvider:         cfg.CloudProvider,
-		CloudAPIKey:           cfg.CloudAPIKey,
-		CloudBaseURL:          cfg.CloudBaseURL,
-		// Voice CLI uses an explicit "cloud" provider — no implicit fallback lane.
+		OpenAIAPIKey:          cfg.OpenAI.APIKey,
+		OpenAIBaseURL:         cfg.OpenAI.BaseURL,
+		OpenAIModel:           cfg.OpenAI.Model,
+		DeepgramAPIKey:        cfg.Deepgram.APIKey,
+		DeepgramBaseURL:       cfg.Deepgram.BaseURL,
+		DeepgramModel:         cfg.Deepgram.Model,
+		DeepgramStreaming:     cfg.Deepgram.Streaming,
+		// Voice CLI uses an explicit provider — no implicit fallback lane.
 		CloudEnabled:   false,
 		ModelPath:      cfg.ModelPath,
 		EagerLoadModel: false, // depcheck covers reachability; lazy-check on first use
@@ -99,6 +103,14 @@ func wrapWithRetry(
 		slog.Duration("max_delay", rcfg.MaxDelay),
 	)
 
+	// Preserve the inner's streaming capability through the retry wrapper.
+	// Without this branch the wrapper would only expose the file-based
+	// Transcribe method and voice.UseCase would silently fall back to the
+	// sequential cycle — defeating the deepgram-stream provider.
+	if streamer, ok := inner.(stt.StreamCapable); ok {
+		return stt.NewRetryingStreamingTranscriber(streamer, inner, rcfg, log)
+	}
+
 	return stt.NewRetryingTranscriber(inner, rcfg, log)
 }
 
@@ -131,7 +143,9 @@ func BuildConverter(cfg *config.VoiceConfig, tempDir string, log *slog.Logger) (
 	}
 
 	switch cfg.Provider {
-	case config.VoiceProviderGoWhisper, config.VoiceProviderCloud:
+	case config.VoiceProviderGoWhisper,
+		config.VoiceProviderOpenAI,
+		config.VoiceProviderDeepgram:
 		log.Info("voice: using passthrough converter (provider handles audio decoding)")
 
 		return passthroughConverter{}, nil

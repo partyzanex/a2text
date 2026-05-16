@@ -35,7 +35,7 @@ type SdNotifier struct {
 // log line. Routing the active check through the sender keeps tests free
 // of NOTIFY_SOCKET env coupling.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=cmd -destination=sdnotify_mocks_test.go -source=sdnotify.go NotifySender
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=sysd -destination=sdnotify_mocks_test.go -source=sdnotify.go NotifySender
 type NotifySender interface {
 	Notify(state string) (sent bool, err error)
 	Active() bool

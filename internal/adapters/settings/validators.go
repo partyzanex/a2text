@@ -28,7 +28,7 @@ func validateDuration(value string) error {
 	}
 
 	if _, err := time.ParseDuration(value); err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.duration_invalid"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationDurationInvalid), err)
 	}
 
 	return nil
@@ -44,11 +44,11 @@ func validatePositiveInt(value string) error {
 
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.int_invalid"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationIntInvalid), err)
 	}
 
 	if parsed <= 0 {
-		return errors.New(i18n.T("validation.int_positive"))
+		return errors.New(i18n.T(i18n.KeyValidationIntPositive))
 	}
 
 	return nil
@@ -63,11 +63,11 @@ func validateNonNegativeInt(value string) error {
 
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.int_invalid"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationIntInvalid), err)
 	}
 
 	if parsed < 0 {
-		return errors.New(i18n.T("validation.int_non_negative"))
+		return errors.New(i18n.T(i18n.KeyValidationIntNonNegative))
 	}
 
 	return nil
@@ -84,15 +84,15 @@ func validateHTTPURL(value string) error {
 
 	parsed, err := url.Parse(value)
 	if err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.url_invalid"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationUrlInvalid), err)
 	}
 
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New(i18n.T("validation.url_scheme"))
+		return errors.New(i18n.T(i18n.KeyValidationUrlScheme))
 	}
 
 	if parsed.Host == "" {
-		return errors.New(i18n.T("validation.url_host_missing"))
+		return errors.New(i18n.T(i18n.KeyValidationUrlHostMissing))
 	}
 
 	return nil
@@ -101,7 +101,7 @@ func validateHTTPURL(value string) error {
 // validateRequiredHTTPURL is validateHTTPURL that rejects empty input.
 func validateRequiredHTTPURL(value string) error {
 	if strings.TrimSpace(value) == "" {
-		return errors.New(i18n.T("validation.url_required"))
+		return errors.New(i18n.T(i18n.KeyValidationUrlRequired))
 	}
 
 	return validateHTTPURL(value)
@@ -119,11 +119,11 @@ func validateNonPositiveFloat(value string) error {
 
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
-		return fmt.Errorf("%s: %w", i18n.T("validation.float_invalid"), err)
+		return fmt.Errorf("%s: %w", i18n.T(i18n.KeyValidationFloatInvalid), err)
 	}
 
 	if parsed > 0 {
-		return errors.New(i18n.T("validation.float_non_positive"))
+		return errors.New(i18n.T(i18n.KeyValidationFloatNonPositive))
 	}
 
 	return nil

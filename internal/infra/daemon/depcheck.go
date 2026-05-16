@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/partyzanex/a2text/internal/infra/depcheck"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/depcheck"
 )
 
 // DepCheckResult is one row of the dependency report. Severity drives
@@ -27,7 +27,7 @@ type DepCheckResult struct {
 // PathLookuper abstracts exec.LookPath so the testable seam can substitute
 // a fake without depending on whatever happens to live in PATH on the CI machine.
 //
-//go:generate go run go.uber.org/mock/mockgen@latest -package=cmd -destination=depcheck_mocks_test.go -source=depcheck.go PathLookuper
+//go:generate go run go.uber.org/mock/mockgen@latest -write_package_comment=false -package=daemon -destination=depcheck_mocks_test.go -source=depcheck.go PathLookuper
 type PathLookuper interface {
 	LookPath(name string) (string, error)
 }

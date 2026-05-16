@@ -75,17 +75,13 @@ func applyToMap(dst map[string]any, cfg *config.VoiceConfig) {
 	dst["language"] = cfg.Language
 	dst["model_path"] = cfg.ModelPath
 	dst["whisper_cpp_models_dir"] = cfg.WhisperCppModelsDir
-	dst["cloud_provider"] = cfg.CloudProvider
-	dst["cloud_base_url"] = cfg.CloudBaseURL
 	dst["temp_dir"] = cfg.TempDir
 	dst["convert_timeout"] = cfg.ConvertTimeout.String()
 	dst["transcribe_timeout"] = cfg.TranscribeTimeout.String()
 	dst["log_level"] = cfg.LogLevel
 
-	if cfg.CloudAPIKey != "" {
-		dst["cloud_api_key"] = cfg.CloudAPIKey
-	}
-
+	applyOpenAIToMap(dst, cfg)
+	applyDeepgramToMap(dst, cfg)
 	applyGoWhisperToMap(dst, cfg)
 	applyHotkeyToMap(dst, cfg)
 	applyOutputToMap(dst, cfg)
@@ -93,6 +89,39 @@ func applyToMap(dst map[string]any, cfg *config.VoiceConfig) {
 	applyDaemonToMap(dst, cfg)
 	applySTTRetryToMap(dst, cfg)
 	applyPrivacyToMap(dst, cfg)
+}
+
+func applyOpenAIToMap(dst map[string]any, cfg *config.VoiceConfig) {
+	openai, _ := dst["openai"].(map[string]any)
+	if openai == nil {
+		openai = make(map[string]any)
+	}
+
+	openai["base_url"] = cfg.OpenAI.BaseURL
+	openai["model"] = cfg.OpenAI.Model
+
+	if cfg.OpenAI.APIKey != "" {
+		openai["api_key"] = cfg.OpenAI.APIKey
+	}
+
+	dst["openai"] = openai
+}
+
+func applyDeepgramToMap(dst map[string]any, cfg *config.VoiceConfig) {
+	deepgram, _ := dst["deepgram"].(map[string]any)
+	if deepgram == nil {
+		deepgram = make(map[string]any)
+	}
+
+	deepgram["base_url"] = cfg.Deepgram.BaseURL
+	deepgram["model"] = cfg.Deepgram.Model
+	deepgram["streaming"] = cfg.Deepgram.Streaming
+
+	if cfg.Deepgram.APIKey != "" {
+		deepgram["api_key"] = cfg.Deepgram.APIKey
+	}
+
+	dst["deepgram"] = deepgram
 }
 
 func applyGoWhisperToMap(dst map[string]any, cfg *config.VoiceConfig) {

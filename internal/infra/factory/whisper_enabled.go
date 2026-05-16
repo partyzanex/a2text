@@ -3,12 +3,32 @@
 package factory
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/pkg/stt"
 )
+
+// buildCloudFallback returns the configured cloud transcriber, preferring
+// OpenAI when both cloud keys are set. Errors when no cloud lane is
+// configured — callers reach this branch only with CloudEnabled=true and
+// must end up with a real cloud transcriber.
+//
+//nolint:ireturn // returns transcribe.Transcriber per DIP
+func buildCloudFallback(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
+	cloud, err := pickCloudFallback(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+
+	if cloud == nil {
+		return nil, errors.New("cloud lane enabled but no openai/deepgram API key configured")
+	}
+
+	return cloud, nil
+}
 
 // buildWhisperCpp constructs a whisper.cpp transcriber. Three sub-cases:
 //
@@ -21,7 +41,7 @@ import (
 func buildWhisperCpp(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) {
 	// Cloud-only path: cloud enabled but no local model configured.
 	if cfg.CloudEnabled && cfg.ModelPath == "" {
-		return buildCloud(cfg, log)
+		return buildCloudFallback(cfg, log)
 	}
 
 	whisperT := stt.NewWhisperTranscriber(log)
@@ -35,7 +55,7 @@ func buildWhisperCpp(cfg *Config, log *slog.Logger) (transcribe.Transcriber, err
 				log.Warn("whisper model not loaded, falling back to cloud only",
 					slog.Any("err", loadErr))
 
-				return buildCloud(cfg, log)
+				return buildCloudFallback(cfg, log)
 			}
 
 			// No cloud lane: return the unloaded transcriber so the bot can
@@ -55,7 +75,7 @@ func buildWhisperCpp(cfg *Config, log *slog.Logger) (transcribe.Transcriber, err
 		return whisperT, nil
 	}
 
-	cloud, err := buildCloud(cfg, log)
+	cloud, err := buildCloudFallback(cfg, log)
 	if err != nil {
 		return nil, err
 	}

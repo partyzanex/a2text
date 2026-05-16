@@ -15,6 +15,10 @@ linters:
     - err113
     - noinlineerr
     - ireturn
+    # Deprecated since golangci-lint v2.12.0 — replaced by gomodguard_v2,
+    # which is auto-enabled via `default: all` above. Disabling silences
+    # the deprecation banner without losing coverage.
+    - gomodguard
 
   # Linters configuration (migrated from `linters-settings` in v1).
   settings:
@@ -249,7 +253,6 @@ run:
   build-tags:
     - integration
     - linux
-    - whisper
   go: '1.25'
 
 # In v2, gofmt lives under `formatters`, not as a linter.

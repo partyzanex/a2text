@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,7 @@ func newOKServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", itoa(len(body)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(http.StatusOK)
 
 		_, _ = io.WriteString(w, body)
@@ -45,37 +46,6 @@ func newFailServer(t *testing.T, code int) *httptest.Server {
 	t.Cleanup(srv.Close)
 
 	return srv
-}
-
-func itoa(n int) string {
-	return strings.TrimLeft(toString(int64(n)), "")
-}
-
-func toString(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-
-	var buf [20]byte
-
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-
-	return string(buf[i:])
 }
 
 func TestDownload_HappyPath_HuggingFace(t *testing.T) {
@@ -210,7 +180,7 @@ func TestDownload_ProgressCallback(t *testing.T) {
 	body := strings.Repeat("x", 256*1024)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", itoa(len(body)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(http.StatusOK)
 		// Trickle the body so the throttled callback has reason to fire
 		// more than once.
