@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -500,12 +501,6 @@ func (s *VoiceUseCaseSuite) TestSwapOutput_Swaps() {
 
 // --- helpers ---
 
-func (s *VoiceUseCaseSuite) newUseCase() *VoiceUseCase {
-	log := slog.New(slog.DiscardHandler)
-
-	return NewVoiceUseCase(s.recorder, s.transcriber, s.output, log)
-}
-
 // makeWAV writes a minimal but structurally valid PCM WAV file with payloadBytes
 // bytes of audio data and returns its path.
 //
@@ -553,4 +548,213 @@ func makeWAV(tb testing.TB, payloadBytes int) string {
 	}
 
 	return path
+}
+
+// --- Hot-swap (atomic Transcriber / Output) ---
+
+// TestSwapTranscriber_NextCycleUsesNew verifies that after SwapTranscriber
+// the next Cycle dispatches Transcribe to the replacement and ignores the
+// original. The atomic Pointer makes this swap visible immediately to any
+// subsequent cycle; in-flight cycles keep their previous reference (covered
+// by the concurrency test below).
+func (s *VoiceUseCaseSuite) TestSwapTranscriber_NextCycleUsesNew() {
+	wavPath := makeWAV(s.T(), 32000)
+
+	next := NewMockTranscriber(s.ctrl)
+
+	// Original must NOT be called after swap — gomock's strict mode will
+	// fail the test if it is. Note s.transcriber gets zero expectations.
+	next.EXPECT().Transcribe(gomock.Any(), wavPath, "ru").Return("свопнули", nil)
+	s.recorder.EXPECT().RecordToFile(gomock.Any(), gomock.Any()).Return(wavPath, nil)
+	s.output.EXPECT().Deliver(gomock.Any(), "свопнули").Return(nil)
+
+	uc := s.newUseCase()
+	uc.SwapTranscriber(next)
+
+	result, err := uc.Cycle(
+		context.Background(), context.Background(),
+		domain.RecordOpts{MaxDuration: time.Second}, "ru",
+	)
+	s.Require().NoError(err)
+	s.Equal("свопнули", result.Text)
+}
+
+// TestSwapOutput_NextCycleUsesNew mirrors the transcriber check for Output.
+func (s *VoiceUseCaseSuite) TestSwapOutput_NextCycleUsesNew() {
+	wavPath := makeWAV(s.T(), 32000)
+
+	next := NewMockOutput(s.ctrl)
+
+	s.recorder.EXPECT().RecordToFile(gomock.Any(), gomock.Any()).Return(wavPath, nil)
+	s.transcriber.EXPECT().Transcribe(gomock.Any(), wavPath, "ru").Return("новый аутпут", nil)
+	next.EXPECT().Deliver(gomock.Any(), "новый аутпут").Return(nil)
+
+	uc := s.newUseCase()
+	uc.SwapOutput(next)
+
+	_, err := uc.Cycle(
+		context.Background(), context.Background(),
+		domain.RecordOpts{MaxDuration: time.Second}, "ru",
+	)
+	s.Require().NoError(err)
+}
+
+// TestSwapTranscriber_NilArg_KeepsCurrent confirms a nil swap is a no-op:
+// the existing transcriber continues to serve cycles. Matches the guard
+// in SwapTranscriber that silently ignores nil to avoid breaking a working
+// pipeline with a bad config reload.
+func (s *VoiceUseCaseSuite) TestSwapTranscriber_NilArg_KeepsCurrent() {
+	wavPath := makeWAV(s.T(), 32000)
+
+	s.recorder.EXPECT().RecordToFile(gomock.Any(), gomock.Any()).Return(wavPath, nil)
+	s.transcriber.EXPECT().Transcribe(gomock.Any(), wavPath, "ru").Return("оригинал", nil)
+	s.output.EXPECT().Deliver(gomock.Any(), "оригинал").Return(nil)
+
+	uc := s.newUseCase()
+	uc.SwapTranscriber(nil)
+
+	_, err := uc.Cycle(
+		context.Background(), context.Background(),
+		domain.RecordOpts{MaxDuration: time.Second}, "ru",
+	)
+	s.Require().NoError(err)
+}
+
+// TestSwapOutput_NilArg_KeepsCurrent mirrors the nil-guard check for Output.
+func (s *VoiceUseCaseSuite) TestSwapOutput_NilArg_KeepsCurrent() {
+	wavPath := makeWAV(s.T(), 32000)
+
+	s.recorder.EXPECT().RecordToFile(gomock.Any(), gomock.Any()).Return(wavPath, nil)
+	s.transcriber.EXPECT().Transcribe(gomock.Any(), wavPath, "ru").Return("ok", nil)
+	s.output.EXPECT().Deliver(gomock.Any(), "ok").Return(nil)
+
+	uc := s.newUseCase()
+	uc.SwapOutput(nil)
+
+	_, err := uc.Cycle(
+		context.Background(), context.Background(),
+		domain.RecordOpts{MaxDuration: time.Second}, "ru",
+	)
+	s.Require().NoError(err)
+}
+
+// TestSwap_NilReceiver_NoPanic covers the *VoiceUseCase == nil guard.
+// Daemon wiring constructs the use case before any swap fires, but the
+// guard exists so a wiring bug returns nil rather than crashing.
+func (s *VoiceUseCaseSuite) TestSwap_NilReceiver_NoPanic() {
+	var uc *VoiceUseCase
+
+	s.NotPanics(func() { uc.SwapTranscriber(s.transcriber) })
+	s.NotPanics(func() { uc.SwapOutput(s.output) })
+}
+
+// TestSwap_ConcurrentWithCycle_NoRace exercises the atomic.Pointer swap
+// under -race: many concurrent cycles racing with continuous Swap calls
+// must complete without the race detector firing or any panic.
+// Replaces the pre-atomic implementation which had a classic
+// store-while-read data race on the transcriber/output fields.
+func (s *VoiceUseCaseSuite) TestSwap_ConcurrentWithCycle_NoRace() {
+	wavPath := makeWAV(s.T(), 32000)
+
+	s.expectPermissiveCycle(wavPath)
+	altT, altO := s.buildSwapAlternates(3)
+
+	uc := s.newUseCase()
+
+	const (
+		cycleWorkers = 4
+		swapWorkers  = 2
+		iterations   = 50
+	)
+
+	done := make(chan struct{})
+
+	var wg sync.WaitGroup
+
+	// Cycle workers: hammer Cycle() back-to-back until done is closed.
+	for range cycleWorkers {
+		wg.Go(func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+
+				_, _ = uc.Cycle(
+					context.Background(), context.Background(),
+					domain.RecordOpts{MaxDuration: time.Second}, "ru",
+				)
+			}
+		})
+	}
+
+	// Swap workers: rotate transcriber + output references continuously.
+	// This is the writer side of the race that atomic.Pointer fixes.
+	for w := range swapWorkers {
+		wg.Go(func() {
+			for i := range iterations {
+				idx := (w + i) % len(altT)
+				uc.SwapTranscriber(altT[idx])
+				uc.SwapOutput(altO[idx])
+			}
+		})
+	}
+
+	// Let workers run for a bounded slice of time. Long enough for the
+	// race detector to observe meaningful interleaving; short enough to
+	// keep the test fast.
+	time.Sleep(50 * time.Millisecond)
+	close(done)
+	wg.Wait()
+}
+
+// newUseCase wires the use case with the suite's mocks and a discard
+// logger. Reused by every Cycle test in this file.
+func (s *VoiceUseCaseSuite) newUseCase() *VoiceUseCase {
+	log := slog.New(slog.DiscardHandler)
+
+	return NewVoiceUseCase(s.recorder, s.transcriber, s.output, log)
+}
+
+// expectPermissiveCycle wires AnyTimes() expectations on the suite's
+// mocks so a goroutine running Cycle() in a loop never fails on call
+// counts. Used by the race-detector concurrency test, where what
+// matters is the absence of a data race rather than precise gomock
+// accounting.
+func (s *VoiceUseCaseSuite) expectPermissiveCycle(wavPath string) {
+	s.recorder.EXPECT().
+		RecordToFile(gomock.Any(), gomock.Any()).
+		Return(wavPath, nil).
+		AnyTimes()
+	s.transcriber.EXPECT().
+		Transcribe(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return("ok", nil).
+		AnyTimes()
+	s.output.EXPECT().
+		Deliver(gomock.Any(), gomock.Any()).
+		Return(nil).
+		AnyTimes()
+}
+
+// buildSwapAlternates returns matching slices of Transcriber/Output
+// mocks the swap workers rotate through. The first slot is the suite's
+// own mocks, then n additional fresh mocks. All mocks must be created
+// on the calling (test) goroutine — gomock's Controller is not safe
+// for concurrent NewMock* construction.
+func (s *VoiceUseCaseSuite) buildSwapAlternates(n int) ([]Transcriber, []Output) {
+	transcribers := []Transcriber{s.transcriber}
+	outputs := []Output{s.output}
+
+	for range n {
+		nextT := NewMockTranscriber(s.ctrl)
+		nextT.EXPECT().Transcribe(gomock.Any(), gomock.Any(), gomock.Any()).Return("ok", nil).AnyTimes()
+		transcribers = append(transcribers, nextT)
+
+		nextO := NewMockOutput(s.ctrl)
+		nextO.EXPECT().Deliver(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		outputs = append(outputs, nextO)
+	}
+
+	return transcribers, outputs
 }

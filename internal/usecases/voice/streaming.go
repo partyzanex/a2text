@@ -45,9 +45,15 @@ type StreamingTranscriber interface {
 }
 
 // streamingCapableTranscriber asserts the wired Transcriber also speaks
-// the streaming protocol; returns nil otherwise.
+// the streaming protocol; returns nil otherwise. Loads the atomic
+// pointer once so a concurrent Swap cannot flip the answer mid-Cycle.
 func (uc *VoiceUseCase) streamingCapableTranscriber() StreamingTranscriber {
-	if streamer, ok := uc.transcriber.(StreamingTranscriber); ok {
+	transcriber := uc.transcriberLoad()
+	if transcriber == nil {
+		return nil
+	}
+
+	if streamer, ok := transcriber.(StreamingTranscriber); ok {
 		return streamer
 	}
 
@@ -210,7 +216,7 @@ func (uc *VoiceUseCase) finaliseStream(
 		return domain.CycleResult{}, &domain.CycleError{Phase: domain.PhaseDeliver, Err: ctxErr}
 	}
 
-	if deliverErr := uc.output.Deliver(ctx, text); deliverErr != nil {
+	if deliverErr := uc.outputLoad().Deliver(ctx, text); deliverErr != nil {
 		return domain.CycleResult{}, &domain.CycleError{Phase: domain.PhaseDeliver, Err: deliverErr}
 	}
 

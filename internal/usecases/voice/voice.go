@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/partyzanex/a2text/internal/domain"
@@ -23,10 +24,16 @@ import (
 // the daemon is in, it does not run a state machine, and it does not
 // listen for IPC. The daemon owns all that. This use case is just the
 // "do one cycle" arrow.
+//
+// transcriber/output are stored as atomic.Pointer so the daemon can
+// hot-swap them from another goroutine (settings auto-save reload)
+// while a Cycle is running. A cycle reads each pointer once at the
+// start of the relevant phase, then holds the interface value on its
+// stack — the swap only takes effect for subsequent cycles.
 type VoiceUseCase struct {
 	recorder    Recorder
-	transcriber Transcriber
-	output      Output
+	transcriber atomic.Pointer[Transcriber]
+	output      atomic.Pointer[Output]
 	archiver    KeptAudioArchiver
 	log         *slog.Logger
 }
@@ -55,12 +62,14 @@ func NewVoiceUseCase(
 		log = slog.New(slog.DiscardHandler)
 	}
 
-	return &VoiceUseCase{
-		recorder:    recorder,
-		transcriber: transcriber,
-		output:      output,
-		log:         log,
+	uc := &VoiceUseCase{
+		recorder: recorder,
+		log:      log,
 	}
+	uc.transcriber.Store(&transcriber)
+	uc.output.Store(&output)
+
+	return uc
 }
 
 // SwapTranscriber atomically replaces the current Transcriber with a
@@ -78,7 +87,7 @@ func (uc *VoiceUseCase) SwapTranscriber(next Transcriber) {
 		return
 	}
 
-	uc.transcriber = next
+	uc.transcriber.Store(&next)
 }
 
 // SwapOutput atomically replaces the current Output with a new one.
@@ -90,7 +99,7 @@ func (uc *VoiceUseCase) SwapOutput(next Output) {
 		return
 	}
 
-	uc.output = next
+	uc.output.Store(&next)
 }
 
 // AttachArchiver wires (or rewires) the optional kept-audio archiver.
@@ -153,6 +162,34 @@ func (uc *VoiceUseCase) Cycle(
 	return uc.sequentialCycle(ctx, recordCtx, opts, lang)
 }
 
+// transcriberLoad returns the currently-installed Transcriber. Reads
+// the atomic pointer once and dereferences; the returned interface
+// value is stable for the caller's frame even if Swap fires next.
+// Returns nil only if the pointer was never set (should not happen in
+// production — NewVoiceUseCase enforces non-nil at construction).
+//
+//nolint:ireturn // returns the consumer-owned Transcriber interface (DIP)
+func (uc *VoiceUseCase) transcriberLoad() Transcriber {
+	p := uc.transcriber.Load()
+	if p == nil {
+		return nil
+	}
+
+	return *p
+}
+
+// outputLoad mirrors transcriberLoad for the Output interface.
+//
+//nolint:ireturn // returns the consumer-owned Output interface (DIP)
+func (uc *VoiceUseCase) outputLoad() Output {
+	p := uc.output.Load()
+	if p == nil {
+		return nil
+	}
+
+	return *p
+}
+
 // clipboardPreSnapshotter is the optional capability ClipboardAutopasteOutput
 // (and any future output) implements to allow voice.Cycle to start the
 // snapshot before delivery time. Defined as a structural interface so
@@ -162,7 +199,12 @@ type clipboardPreSnapshotter interface {
 }
 
 func (uc *VoiceUseCase) preSnapshotClipboard(ctx context.Context) {
-	if pre, ok := uc.output.(clipboardPreSnapshotter); ok {
+	out := uc.outputLoad()
+	if out == nil {
+		return
+	}
+
+	if pre, ok := out.(clipboardPreSnapshotter); ok {
 		pre.PreSnapshot(ctx)
 	}
 }
@@ -204,8 +246,13 @@ func (uc *VoiceUseCase) transcribeAndDeliver(
 	audioSize int64,
 	lang string,
 ) (domain.CycleResult, error) {
+	// Snapshot the current Transcriber/Output for this cycle's frame so
+	// a concurrent Swap does not split the call between two backends.
+	transcriber := uc.transcriberLoad()
+	out := uc.outputLoad()
+
 	transcribeStart := time.Now()
-	text, err := uc.transcriber.Transcribe(ctx, audioPath, lang)
+	text, err := transcriber.Transcribe(ctx, audioPath, lang)
 	sttDuration := time.Since(transcribeStart)
 
 	if err != nil {
@@ -221,7 +268,7 @@ func (uc *VoiceUseCase) transcribeAndDeliver(
 		return domain.CycleResult{}, &domain.CycleError{Phase: domain.PhaseDeliver, Err: ctxErr}
 	}
 
-	if deliverErr := uc.output.Deliver(ctx, text); deliverErr != nil {
+	if deliverErr := out.Deliver(ctx, text); deliverErr != nil {
 		return domain.CycleResult{}, &domain.CycleError{Phase: domain.PhaseDeliver, Err: deliverErr}
 	}
 
