@@ -600,34 +600,36 @@ func (d *Daemon) reloadHotkey(ctx context.Context) {
 		return
 	}
 
-	if d.cfg.Hotkey.Key == "" {
-		// Empty key: tear down any existing registration so the user
-		// can effectively "unbind" by clearing the field. RunUnsetup
-		// is a no-op on non-GNOME desktops and on missing bindings.
+	switch decideHotkeyRegOp(d.cfg.Hotkey.Key, d.hotkey != nil, true) {
+	case hotkeyRegOpNoop:
+		return
+	case hotkeyRegOpUnsetup:
+		// Either the user cleared the key (effective "unbind") or a
+		// built-in listener is active (evdev) — in both cases drop the
+		// GNOME custom binding. RunUnsetup is a no-op on non-GNOME
+		// desktops and on missing bindings.
 		if err := setup.RunUnsetup(ctx, d.log); err != nil && !errors.Is(err, setup.ErrDesktopUnsupported) {
 			d.log.Warn("voice: hotkey unregister failed", slog.Any("err", err))
 		}
+	case hotkeyRegOpSetup:
+		if err := setup.RunSetup(ctx, d.cfg, d.log); err != nil {
+			if errors.Is(err, setup.ErrDesktopUnsupported) {
+				return
+			}
 
-		return
-	}
+			d.log.Warn("voice: hotkey re-register failed",
+				slog.String("key", d.cfg.Hotkey.Key),
+				slog.Any("err", err),
+			)
 
-	if err := setup.RunSetup(ctx, d.cfg, d.log); err != nil {
-		if errors.Is(err, setup.ErrDesktopUnsupported) {
 			return
 		}
 
-		d.log.Warn("voice: hotkey re-register failed",
+		d.log.Info("voice: hotkey re-registered",
 			slog.String("key", d.cfg.Hotkey.Key),
-			slog.Any("err", err),
+			slog.Any("modifiers", d.cfg.Hotkey.Modifiers),
 		)
-
-		return
 	}
-
-	d.log.Info("voice: hotkey re-registered",
-		slog.String("key", d.cfg.Hotkey.Key),
-		slog.Any("modifiers", d.cfg.Hotkey.Modifiers),
-	)
 }
 
 // acceptToggle returns true when the Toggle should be processed.

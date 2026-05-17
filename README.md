@@ -4,6 +4,49 @@ Speech-to-text dictation daemon with global hotkey, system tray icon, autopaste,
 
 Target platform: **Linux + Wayland** (GNOME tested). X11 fallback is supported via build tags/runtime detection.
 
+## Features
+
+### Recording & transcription
+
+- **Push-to-talk hold mode** and **click-to-toggle mode** — `hotkey.mode: hold | toggle`. Hold needs a backend that sees both Press and Release (`evdev`).
+- **Two hotkey backends**: `evdev` (reads `/dev/input/event*`, sees Press/Release on any session — requires `input` group membership) and `auto` (Wayland → evdev, X11 → XGrabKey when built with `-tags=x11`, otherwise registers a GNOME custom-keybinding that is Press-only).
+- **Multiple STT providers** with the same wire protocol: local `whisper-cpp` (CGo, offline), remote `go-whisper` HTTP service, OpenAI cloud, Deepgram cloud (incl. streaming).
+- **Fallback chain** and **retry decorator** — primary/secondary providers with exponential-backoff retries (`stt_retry`).
+- **Silence gate** (`capture.silence_threshold_dbfs`) skips STT when the recording is below the dBFS threshold — saves API calls and avoids hallucinated transcripts from background noise.
+- **Per-cycle max duration cap** (`capture.max_duration`) protects against runaway captures.
+- **Capture backends**: `pw-record` (PipeWire) and `parec` (PulseAudio) — auto-detected.
+
+### Output delivery
+
+- **Three output modes**: `stdout`, `clipboard`, `clipboard-autopaste`.
+- **Autopaste backends**: `uinput` (kernel virtual keyboard, recommended on Wayland), `wtype`, `ydotool`, `xdotool` — or `auto` picks the first that probes ready.
+- **Clipboard snapshot/restore** — saves whatever was on the clipboard before delivery and restores it after, so the user's previous copy buffer is not clobbered (`output.restore_clipboard`).
+- **Wayland + X11 clipboard backends** — `wl-copy`/`wl-paste` and `xclip`, auto-selected.
+
+### UI & lifecycle
+
+- **System-tray icon** with state-driven menu (idle / recording / transcribing / error).
+- **Fyne v2 settings window** with live validation, debounced auto-save, and i18n (ru, en).
+- **Self-bootstrap** — running `a2text` with no arguments and no live daemon socket starts one and sends `toggle` once the socket is ready.
+- **Autostart on login** — toggle in the settings UI writes an XDG `.desktop` file under `~/.config/autostart/`.
+- **First-run model download** — `whisper-cpp` provider auto-fetches `ggml-tiny.bin` into the XDG data dir; bigger models come from the **Download model** dialog.
+- **IPC over Unix socket** — `toggle`, `start`, `stop`, `ping` (see [IPC protocol](#ipc-protocol)).
+- **Audio archive** (optional) — keep every recording as WAV or OGG under `privacy.keep_audio_dir`.
+- **Transcript log** (optional) — `privacy.log_transcript`. Off by default.
+
+### Settings UI tabs
+
+| Tab | What you configure |
+|---|---|
+| **STT** | Active provider, model picker, language, retry/fallback chain, provider-specific credentials (OpenAI / Deepgram / go-whisper URL). |
+| **Capture & Hotkey** | Capture backend (auto / pw-record / parec), sample rate, channels, silence threshold, max recording duration; hotkey key + modifiers, mode (toggle / hold), backend (auto / evdev / none), autopaste command. |
+| **Output** | Output mode (stdout / clipboard / clipboard-autopaste), restore-clipboard toggle. |
+| **Privacy** | Transcript logging, audio archive (off / wav / ogg), archive directory. |
+| **Process** | Autostart on login, temp directory, log level, UI language, shutdown grace period. |
+| **About** | Version, commit, build info, links. |
+
+> Hold mode + naked function key (e.g. F4) requires `backend: evdev` (or `auto` under Wayland). The GNOME DE shortcut path is Press-only and will degrade hold to repeated toggle on key autorepeat.
+
 ## Quick start
 
 `make install` picks the layout from the caller:

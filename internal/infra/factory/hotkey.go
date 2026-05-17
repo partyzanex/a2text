@@ -106,7 +106,17 @@ func buildAutoHotkey(cfg *config.VoiceConfig, log *slog.Logger, handler voice.Ha
 
 	switch sessionType {
 	case "wayland":
-		log.Info("voice: hotkey.backend=auto: Wayland session — no built-in hotkey, use DE shortcut")
+		hk, err := buildEvdevHotkey(cfg, log, handler)
+		if err == nil {
+			log.Info("voice: hotkey.backend=auto: Wayland session — using evdev for Press/Release")
+
+			return hk, nil
+		}
+
+		log.Warn(
+			"voice: hotkey.backend=auto: Wayland — evdev unavailable, falling back to DE shortcut (toggle-only)",
+			slog.Any("err", err),
+		)
 
 		return nil, nil //nolint:nilnil
 

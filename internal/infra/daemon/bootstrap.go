@@ -290,7 +290,7 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 	signalCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	registerHotkey(signalCtx, cfg, log)
+	registerHotkey(signalCtx, cfg, log, hotkeyListener != nil)
 	attachTray(signalCtx, cfg, log, daemon, stop)
 
 	return daemon.Serve(signalCtx, socketPath)
@@ -301,17 +301,29 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 // logged at WARN and never propagate — a missing or broken hotkey must not
 // prevent the daemon from starting. Non-GNOME sessions and headless
 // environments are silently skipped.
-func registerHotkey(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) {
-	if cfg.Hotkey.Key == "" {
+func registerHotkey(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, builtin bool) {
+	switch decideHotkeyRegOp(cfg.Hotkey.Key, builtin, false) {
+	case hotkeyRegOpNoop:
 		return
-	}
-
-	if err := setup.RunSetup(ctx, cfg, log); err != nil {
-		if !errors.Is(err, setup.ErrDesktopUnsupported) {
-			log.Warn("voice: hotkey auto-register failed",
-				slog.String("key", cfg.Hotkey.Key),
+	case hotkeyRegOpUnsetup:
+		// Built-in listener (evdev) reads /dev/input directly. A GNOME
+		// custom binding left in place would spawn the CLI on every
+		// Press → IPC toggle, racing with evdev (Press from evdev
+		// starts recording, then IPC Toggle from GNOME stops it before
+		// Release arrives — see hold-mode regression).
+		if err := setup.RunUnsetup(ctx, log); err != nil && !errors.Is(err, setup.ErrDesktopUnsupported) {
+			log.Warn("voice: hotkey unregister (built-in listener active) failed",
 				slog.Any("err", err),
 			)
+		}
+	case hotkeyRegOpSetup:
+		if err := setup.RunSetup(ctx, cfg, log); err != nil {
+			if !errors.Is(err, setup.ErrDesktopUnsupported) {
+				log.Warn("voice: hotkey auto-register failed",
+					slog.String("key", cfg.Hotkey.Key),
+					slog.Any("err", err),
+				)
+			}
 		}
 	}
 }

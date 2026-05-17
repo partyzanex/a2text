@@ -91,6 +91,7 @@ func (w *Window) buildHotkeyFieldWidgets(ff *formFields) {
 	ff.hotkeyBackend = widget.NewSelect(
 		[]string{
 			string(config.VoiceHotkeyBackendAuto),
+			string(config.VoiceHotkeyBackendEvdev),
 			string(config.VoiceHotkeyBackendNone),
 		},
 		nil,

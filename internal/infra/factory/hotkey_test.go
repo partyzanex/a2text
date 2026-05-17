@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
 
@@ -117,6 +117,52 @@ func TestBuildHotkey_Evdev_UnknownModifier_Errors(t *testing.T) {
 	_, err := factory.BuildHotkey(cfg, nil, noopHandler)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "modifier")
+}
+
+// TestBuildHotkey_AutoWayland_BuildsEvdevListener pins the regression fix:
+// under XDG_SESSION_TYPE=wayland, backend=auto must produce a working evdev
+// listener instead of nil. A nil listener would force the daemon onto the
+// DE-shortcut path, which is Press-only and breaks hold mode (Press from
+// the DE shortcut starts recording, then GNOME autorepeat keeps firing
+// Toggle → start/stop/start/stop while the key is held).
+func TestBuildHotkey_AutoWayland_BuildsEvdevListener(t *testing.T) {
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+
+	cfg := &config.VoiceConfig{
+		Hotkey: config.VoiceHotkeyConfig{
+			Enabled: true,
+			Key:     "F4",
+			Backend: config.VoiceHotkeyBackendAuto,
+			Mode:    config.VoiceHotkeyModeHold,
+		},
+	}
+
+	hk, err := factory.BuildHotkey(cfg, nil, noopHandler)
+	require.NoError(t, err)
+	require.NotNil(t, hk,
+		"auto on Wayland must fall through to evdev so Press/Release are observed; "+
+			"a nil listener would degrade hold mode to toggle-only via the DE shortcut",
+	)
+}
+
+// TestBuildHotkey_AutoWayland_EvdevUnknownKey_FallsBackToNil verifies that
+// when the evdev backend rejects the configured key under auto+Wayland, the
+// factory degrades to (nil, nil) rather than returning a hard error. The
+// daemon then logs a warning and the user must pick a valid key.
+func TestBuildHotkey_AutoWayland_EvdevUnknownKey_FallsBackToNil(t *testing.T) {
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+
+	cfg := &config.VoiceConfig{
+		Hotkey: config.VoiceHotkeyConfig{
+			Enabled: true,
+			Key:     "ZZZZ",
+			Backend: config.VoiceHotkeyBackendAuto,
+		},
+	}
+
+	hk, err := factory.BuildHotkey(cfg, nil, noopHandler)
+	require.NoError(t, err, "auto must never return an error from backend choice")
+	assert.Nil(t, hk, "evdev rejects unknown key → auto degrades to nil listener")
 }
 
 func TestBuildHotkey_UnknownBackend_Errors(t *testing.T) {
