@@ -79,6 +79,10 @@ type Daemon struct {
 	// through the config pointer on the hot path. Default "" maps to toggle.
 	hotkeyMode config.VoiceHotkeyMode
 
+	// holdGate debounces hold-mode Press/Release pairs that are too short
+	// to be real recording attempts (accidental taps, key bounces).
+	holdGate holdGate
+
 	// serverMu protects the server pointer set by Serve and read by Shutdown.
 	// Without it we'd race when Shutdown is called from another goroutine
 	// during Serve startup.
@@ -342,6 +346,17 @@ func (d *Daemon) Toggle(ctx context.Context) {
 // generic — they just deliver edge events.
 func (d *Daemon) HotkeyHandler() voice.Handler {
 	return func(ctx context.Context, evt voice.HotkeyEvent) {
+		// Hold mode: short Press+Release pairs (<DefaultHoldMinDuration)
+		// would otherwise produce a few-frame WAV that either hits the
+		// silence gate or makes the STT backend return "no speech",
+		// landing the SM in StateError. Debounce by deferring Press
+		// dispatch until the user has held long enough.
+		if d.hotkeyMode == config.VoiceHotkeyModeHold {
+			d.handleHoldEdge(ctx, evt)
+
+			return
+		}
+
 		event, ok := hotkeyEventToSM(evt, d.hotkeyMode)
 		if !ok {
 			d.log.DebugContext(ctx, "voice: hotkey edge ignored for current mode",
@@ -360,36 +375,7 @@ func (d *Daemon) HotkeyHandler() voice.Handler {
 			return
 		}
 
-		newState, action, err := d.machine.Apply(event)
-		if err != nil {
-			// domain.ErrBusy is the expected race outcome when a key edge lands
-			// mid-cycle (e.g. between domain.EventStop and domain.EventTranscribeDone).
-			// Logging it at warn would spam during normal use.
-			if errors.Is(err, domain.ErrBusy) {
-				d.log.DebugContext(ctx, "voice: hotkey edge rejected (busy)",
-					slog.String("edge", hotkeyEventString(evt)),
-					slog.String("event", string(event)),
-				)
-
-				return
-			}
-
-			d.log.WarnContext(ctx, "voice: hotkey edge apply failed",
-				slog.String("edge", hotkeyEventString(evt)),
-				slog.Any("err", err),
-			)
-
-			return
-		}
-
-		d.log.DebugContext(ctx, "voice: hotkey edge applied",
-			slog.String("edge", hotkeyEventString(evt)),
-			slog.String("event", string(event)),
-			slog.String("state", string(newState)),
-			slog.String("action", string(action)),
-		)
-
-		d.dispatch(ctx, action)
+		d.applyHotkeyEvent(ctx, evt, event)
 	}
 }
 
@@ -590,6 +576,64 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	})
 
 	return d.shutdownErr
+}
+
+// handleHoldEdge routes a hold-mode hotkey edge through the debounce gate.
+// Press is deferred by DefaultHoldMinDuration so taps shorter than that drop
+// silently; Release after that window dispatches EventStop normally.
+func (d *Daemon) handleHoldEdge(ctx context.Context, evt voice.HotkeyEvent) {
+	switch evt {
+	case voice.HotkeyPress:
+		d.holdGate.OnPress(DefaultHoldMinDuration, func() {
+			d.applyHotkeyEvent(ctx, evt, domain.EventStart)
+		})
+	case voice.HotkeyRelease:
+		if !d.holdGate.OnRelease() {
+			d.log.DebugContext(ctx, "voice: hold tap below minimum duration — dropped",
+				slog.Duration("min", DefaultHoldMinDuration),
+			)
+
+			return
+		}
+
+		d.applyHotkeyEvent(ctx, evt, domain.EventStop)
+	}
+}
+
+// applyHotkeyEvent feeds a single SM event through the state machine and
+// dispatches the resulting action. Shared by all hotkey paths so the
+// busy/error logging stays in one place.
+func (d *Daemon) applyHotkeyEvent(ctx context.Context, evt voice.HotkeyEvent, event domain.Event) {
+	newState, action, err := d.machine.Apply(event)
+	if err != nil {
+		// domain.ErrBusy is the expected race outcome when a key edge lands
+		// mid-cycle (e.g. between domain.EventStop and domain.EventTranscribeDone).
+		// Logging it at warn would spam during normal use.
+		if errors.Is(err, domain.ErrBusy) {
+			d.log.DebugContext(ctx, "voice: hotkey edge rejected (busy)",
+				slog.String("edge", hotkeyEventString(evt)),
+				slog.String("event", string(event)),
+			)
+
+			return
+		}
+
+		d.log.WarnContext(ctx, "voice: hotkey edge apply failed",
+			slog.String("edge", hotkeyEventString(evt)),
+			slog.Any("err", err),
+		)
+
+		return
+	}
+
+	d.log.DebugContext(ctx, "voice: hotkey edge applied",
+		slog.String("edge", hotkeyEventString(evt)),
+		slog.String("event", string(event)),
+		slog.String("state", string(newState)),
+		slog.String("action", string(action)),
+	)
+
+	d.dispatch(ctx, action)
 }
 
 // reloadHotkey re-registers the desktop hotkey binding from the current
