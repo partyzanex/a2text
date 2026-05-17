@@ -77,6 +77,20 @@ const restoreDelay = 250 * time.Millisecond
 // as a wiring bug rather than a transient I/O error.
 var ErrClipboardAutopasteNotInitialized = errors.New("output: clipboard autopaste output is not initialized")
 
+// ErrClipboardRaced signals that the clipboard contents diverged from the
+// transcript we just wrote, between Deliver and the actual Ctrl+V paste.
+// Returned (and dropped — autopaste is best-effort) when a third party
+// raced us between wl-copy and the paste keystroke. Whatever they wrote
+// stays in the clipboard; we refuse to synthesise Ctrl+V because that
+// would inject the attacker's payload into the user's focused window.
+//
+// Security rationale: any same-UID process can write to the clipboard.
+// Without this check, malware could pre-stage shell commands, sit in the
+// background until the user triggers transcription, then race-overwrite
+// the clipboard between Deliver and Paste so the autopaste keystroke
+// types its payload into a terminal/sudo-prompt focused at that moment.
+var ErrClipboardRaced = errors.New("output: clipboard contents diverged before paste, refusing to inject")
+
 // ClipboardAutopasteOutput delivers text via clipboard (with stdout
 // fallback inherited from ClipboardOutput) AND simulates Ctrl+V so the
 // transcription appears at the cursor without the user touching the
@@ -422,6 +436,31 @@ func (o *ClipboardAutopasteOutput) pasteAfterDelay(ctx context.Context, text str
 	case <-timer.C:
 	case <-ctx.Done():
 		return fmt.Errorf("clipboard autopaste: %w", ctx.Err())
+	}
+
+	// Race-guard: re-read the clipboard right before injecting Ctrl+V.
+	// Any same-UID process can write to the clipboard between our Deliver
+	// and this Paste; if the bytes no longer match the transcript we just
+	// wrote, refuse to synthesise the keystroke. Bail-out is silent for
+	// the user (transcript stays accessible via clipboard history) but
+	// loud in the log so a post-incident audit can spot the race.
+	if o.snapshotter != nil {
+		current, err := o.snapshotter.Snapshot(ctx)
+
+		switch {
+		case err != nil:
+			o.logger().Warn("voice: clipboard re-read before paste failed, skipping race-guard",
+				slog.String("err", err.Error()),
+			)
+		case string(current.Data) != text:
+			o.logger().Warn("voice: clipboard changed between deliver and paste, refusing autopaste",
+				slog.Int("expected_bytes", len(text)),
+				slog.Int("actual_bytes", len(current.Data)),
+				slog.String("actual_mime", current.MIME),
+			)
+
+			return ErrClipboardRaced
+		}
 	}
 
 	if err := o.autopaster.Paste(ctx); err != nil {

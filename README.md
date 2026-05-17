@@ -4,6 +4,20 @@ Speech-to-text dictation daemon with global hotkey, system tray icon, autopaste,
 
 Target platform: **Linux + Wayland** (GNOME tested). X11 fallback is supported via build tags/runtime detection.
 
+## Security model
+
+a2text holds two privileged kernel handles for its lifetime: a write handle to `/dev/uinput` (autopaste keystroke synthesis) and a read handle to `/dev/input/event*` (hotkey capture). Be aware of the trust boundary:
+
+- **IPC socket** at `$XDG_RUNTIME_DIR/a2text/a2text-voice.sock` is `0o600` (cross-UID isolation enforced via `SO_PEERCRED`). **Any process running under your UID can connect and drive the daemon** — sending `start`, `stop`, `toggle`. There is no shared-secret check today: a malicious same-UID process (sandbox escape, malware from `~/Downloads`, untrusted Electron app with broad filesystem access) can:
+  - start recording silently and read `/tmp/a2text-voice-*.wav` before the daemon cleans it up;
+  - race-overwrite the clipboard between Deliver and Paste to inject arbitrary keystrokes into the currently focused window (mitigated by a pre-Paste race-guard that aborts if the clipboard content diverges).
+- **Cloud STT providers** (OpenAI, Deepgram) receive raw audio. Cloud routing is **off by default** — the default config points at local `go-whisper` or `whisper-cpp`. Switching to a cloud provider in the settings UI uploads audio to that vendor; review their data-retention policy before enabling.
+- **whisper.cpp models** are downloaded from HuggingFace mirrors. The downloader does not yet verify SHA-256 against a pinned manifest. Audit the model file before pointing the daemon at it on hostile networks.
+- **API keys** in `~/.config/a2text/config.yaml` are stored as plaintext YAML. Use a per-user encrypted home or the `A2TEXT_*_API_KEY` env vars (which the daemon reads from systemd `EnvironmentFile=` if you do not want them on disk). A libsecret/keyring backend is on the roadmap.
+- **Audit trail** lives at `$XDG_DATA_HOME/a2text/audit.log` (default `~/.local/share/a2text/audit.log`). Append-only, `0o600`. Records IPC accepts (peer PID/UID) and autopaste fires. Rotate manually; the daemon does not.
+
+If you operate a2text on a shared machine, or in a context where you cannot trust every same-UID process, **disable autopaste** (`output.mode: clipboard`) and **prefer evdev hotkey backend** (lowest surface).
+
 ## Features
 
 ### Recording & transcription

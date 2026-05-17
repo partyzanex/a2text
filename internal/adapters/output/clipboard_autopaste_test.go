@@ -299,8 +299,11 @@ func (s *ClipboardAutopasteSuite) TestRestore_HappyPath_PrevPayloadWrittenBack()
 	// Pre-paste snapshot.
 	snap.EXPECT().Snapshot(gomock.Any()).Return(prev, nil)
 	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	// Pre-Paste race-guard: clipboard still holds the transcript we just wrote.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(
+		ClipboardSnapshot{MIME: "text/plain", Data: []byte("hello")}, nil)
 	paster.EXPECT().Paste(gomock.Any()).Return(nil)
-	// Race-guard re-read returns the transcript.
+	// Post-Paste restore-guard re-read returns the transcript.
 	snap.EXPECT().Snapshot(gomock.Any()).Return(
 		ClipboardSnapshot{MIME: "text/plain", Data: []byte("hello")}, nil)
 	// Restore.
@@ -324,8 +327,11 @@ func (s *ClipboardAutopasteSuite) TestRestore_GuardMismatch_SkipsRestore() {
 
 	snap.EXPECT().Snapshot(gomock.Any()).Return(prev, nil)
 	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	// Pre-Paste race-guard: clipboard still holds the transcript. Allow Paste.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(
+		ClipboardSnapshot{MIME: "text/plain", Data: []byte("hello")}, nil)
 	paster.EXPECT().Paste(gomock.Any()).Return(nil)
-	// User Ctrl+C'd something else after paste; race-guard sees foreign data.
+	// User Ctrl+C'd something else after paste; restore-guard sees foreign data.
 	snap.EXPECT().Snapshot(gomock.Any()).Return(
 		ClipboardSnapshot{MIME: "text/plain", Data: []byte("user-typed")}, nil)
 	// restorer.CopyTyped must NOT be called — strict mock fails the test if it is.
@@ -345,8 +351,13 @@ func (s *ClipboardAutopasteSuite) TestRestore_SnapshotFails_RestoreSkipped() {
 
 	snap.EXPECT().Snapshot(gomock.Any()).Return(ClipboardSnapshot{}, errors.New("wl-paste wedged"))
 	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	// Pre-Paste race-guard: snapshotter is still wired, so the call still
+	// happens. A persistent wedge is logged at WARN and the paste proceeds —
+	// we never refuse paste based on a snapshotter error (would be a
+	// denial-of-service vector via a flaky clipboard backend).
+	snap.EXPECT().Snapshot(gomock.Any()).Return(ClipboardSnapshot{}, errors.New("wl-paste still wedged"))
 	paster.EXPECT().Paste(gomock.Any()).Return(nil)
-	// No race-guard re-read, no CopyTyped (zero-snapshot short-circuits).
+	// No restore-guard re-read needed — pre-snapshot was zero, restore short-circuits.
 
 	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
 		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
@@ -363,13 +374,47 @@ func (s *ClipboardAutopasteSuite) TestRestore_EmptyPrev_RestoreSkipped() {
 
 	snap.EXPECT().Snapshot(gomock.Any()).Return(ClipboardSnapshot{Empty: true}, nil)
 	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	// Pre-Paste race-guard: clipboard now holds the transcript.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(
+		ClipboardSnapshot{MIME: "text/plain", Data: []byte("hello")}, nil)
 	paster.EXPECT().Paste(gomock.Any()).Return(nil)
-	// No restore call.
+	// No restore call (prev was empty).
 
 	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
 		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
 
 	s.Require().NoError(out.Deliver(context.Background(), "hello"))
+}
+
+// TestRestore_PrePasteRaceGuard_AbortsOnDivergence pins the security fix:
+// if a third party overwrites the clipboard between Deliver and Paste, the
+// autopaster must NOT fire. Otherwise an attacker process under the same
+// UID could pre-stage a shell command, wait for the user to trigger
+// transcription, race-overwrite the clipboard, and have the daemon
+// synthesise Ctrl+V into a terminal/sudo prompt.
+func (s *ClipboardAutopasteSuite) TestRestore_PrePasteRaceGuard_AbortsOnDivergence() {
+	delivery := NewMockClipboardDelivery(s.ctrl)
+	paster := NewMockAutopaster(s.ctrl)
+	snap := NewMockClipboardSnapshotter(s.ctrl)
+	restorer := NewMockClipboardTypedCopier(s.ctrl)
+
+	prev := ClipboardSnapshot{MIME: "text/plain", Data: []byte("before")}
+
+	snap.EXPECT().Snapshot(gomock.Any()).Return(prev, nil)
+	delivery.EXPECT().Deliver(gomock.Any(), "hello").Return(nil)
+	// Attacker raced us between Deliver and the pre-Paste re-read: the
+	// clipboard now holds a shell command instead of our transcript.
+	snap.EXPECT().Snapshot(gomock.Any()).Return(
+		ClipboardSnapshot{MIME: "text/plain", Data: []byte("rm -rf ~")}, nil)
+	// Paste must NOT be called — strict mock would fail the test.
+	// Restore must NOT be called either — we never made it past the guard.
+
+	out := NewClipboardAutopasteOutput(delivery, paster, time.Millisecond,
+		slog.New(slog.DiscardHandler)).WithClipboardRestore(snap, restorer)
+
+	err := out.Deliver(context.Background(), "hello")
+	s.Require().ErrorIs(err, ErrClipboardRaced,
+		"clipboard mutation between deliver and paste must surface as ErrClipboardRaced")
 }
 
 // WithClipboardRestore on nil deps returns the receiver unchanged.

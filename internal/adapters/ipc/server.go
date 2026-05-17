@@ -11,6 +11,23 @@ import (
 	"time"
 )
 
+// daemonUID returns the daemon's own UID for peer-credential matching.
+// We read it on every connection (cheap, vDSO-backed getuid()) rather
+// than caching in a package-level var — keeps the package free of
+// mutable globals and tolerates fork+setuid scenarios cleanly.
+//
+// os.Getuid never returns negative on Linux (errno-on-failure is the
+// glibc-style C API; Go's syscall wrapper cannot fail and never returns
+// a sentinel negative). The uint32 narrow is safe in practice.
+func daemonUID() uint32 {
+	uid := os.Getuid()
+	if uid < 0 {
+		return 0
+	}
+
+	return uint32(uid) //nolint:gosec // see godoc: getuid cannot return negative on linux
+}
+
 // Handler is the daemon-supplied callback that converts a Command into a
 // Response. It is invoked once per accepted connection. The handler runs
 // inside a per-connection goroutine; the daemon is responsible for
@@ -214,6 +231,10 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	if !s.authenticatePeer(conn) {
+		return
+	}
+
 	var req Request
 	if err := Decode(conn, &req); err != nil {
 		s.encodeErrorResponse(conn, &Response{
@@ -242,6 +263,57 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 			slog.String("err", err.Error()),
 		)
 	}
+}
+
+// authenticatePeer rejects cross-UID IPC callers via SO_PEERCRED. The
+// kernel stamps these creds at connect() time, so they cannot be forged
+// by the client. Same-UID callers are allowed (the perms-only model of
+// `0o600` on the socket leaves no kernel-enforced barrier there) but
+// the (pid, uid) tuple is logged so a post-incident audit can trace
+// which process drove the daemon.
+//
+// Returns true when the caller may proceed. On false the function has
+// already encoded an error response — handleConn just unwinds.
+func (s *Server) authenticatePeer(conn net.Conn) bool {
+	cred, err := readPeerCred(conn)
+	if err != nil {
+		s.log.Warn("ipc: peer-cred lookup failed, rejecting connection",
+			slog.String("err", err.Error()),
+		)
+
+		s.encodeErrorResponse(conn, &Response{
+			Version:   ProtocolVersion,
+			OK:        false,
+			ErrorCode: ErrCodePermissionDenied,
+			Message:   "peer-credential lookup failed",
+		}, "peercred error")
+
+		return false
+	}
+
+	if cred.UID != daemonUID() {
+		s.log.Warn("ipc: rejecting cross-UID connection",
+			slog.Int("peer_pid", int(cred.PID)),
+			slog.Int("peer_uid", int(cred.UID)),
+			slog.Int("daemon_uid", int(daemonUID())),
+		)
+
+		s.encodeErrorResponse(conn, &Response{
+			Version:   ProtocolVersion,
+			OK:        false,
+			ErrorCode: ErrCodePermissionDenied,
+			Message:   "cross-UID IPC is not permitted",
+		}, "cross-UID reject")
+
+		return false
+	}
+
+	s.log.Debug("ipc: accepted connection",
+		slog.Int("peer_pid", int(cred.PID)),
+		slog.Int("peer_uid", int(cred.UID)),
+	)
+
+	return true
 }
 
 // validateRequest checks version, ID, and command. Returns nil if valid.

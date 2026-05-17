@@ -41,11 +41,50 @@ RestartSec=5
 # Give the daemon time to drain in-flight transcription before SIGKILL.
 TimeoutStopSec=20
 
-# Hardening NOT enabled by default: ProtectHome=read-only would block the
-# unix socket in $XDG_RUNTIME_DIR (usually under /run/user/UID, fine) and
-# any writes to ~/.cache or ~/.local (used for whisper models). If you
-# want hardening, add it after testing per-user paths and listing them
-# in ReadWritePaths=.
+# --- Sandbox hardening ---
+#
+# The daemon needs read access to /dev/input/event* (hotkey backend),
+# write access to /dev/uinput (autopaste), and the user's $XDG_*_HOME
+# directories. Everything else is restricted. Each directive narrows the
+# attack surface available to an attacker who gains RCE inside the
+# daemon process — useful given the daemon already holds two kernel
+# input handles (read keystrokes, write keystrokes) for its lifetime.
+#
+# `systemd-analyze security a2text-voice.service` will rate the unit
+# after enabling these. Tune ReadWritePaths if you keep config/models
+# outside the XDG defaults.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/a2text %h/.local/share/a2text %h/.cache/a2text
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @reboot @raw-io @cpu-emulation @obsolete @debug @clock @module
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Network access required for cloud STT providers (OpenAI, Deepgram) and
+# go-whisper HTTP backend. Restrict to IPv4/IPv6 only — no AF_PACKET, no
+# raw sockets. If you exclusively use whisper.cpp (local), tighten this
+# to `RestrictAddressFamilies=AF_UNIX` to lock the daemon offline.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# /dev/uinput + /dev/input/event* must remain accessible. DeviceAllow is
+# additive over the default empty set when DevicePolicy=closed.
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+DeviceAllow=char-input r
 
 [Install]
 WantedBy=graphical-session.target

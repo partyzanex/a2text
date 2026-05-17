@@ -91,10 +91,11 @@ type Response struct {
 // Error codes carried in Response.ErrorCode. Stable across protocol
 // versions: clients pin against these strings, not against Message.
 const (
-	ErrCodeVersionMismatch = "ipc_version_mismatch"
-	ErrCodeUnknownCommand  = "ipc_unknown_command"
-	ErrCodeDecodeFailed    = "ipc_decode_failed"
-	ErrCodeBusy            = "voice_busy"
+	ErrCodeVersionMismatch  = "ipc_version_mismatch"
+	ErrCodeUnknownCommand   = "ipc_unknown_command"
+	ErrCodeDecodeFailed     = "ipc_decode_failed"
+	ErrCodeBusy             = "voice_busy"
+	ErrCodePermissionDenied = "ipc_permission_denied"
 )
 
 // Encode writes one request and a trailing newline. We use newline as
