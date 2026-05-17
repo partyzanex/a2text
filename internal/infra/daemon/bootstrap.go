@@ -19,6 +19,7 @@ import (
 	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/internal/usecases/transcribe"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
+	"github.com/partyzanex/a2text/pkg/stt"
 )
 
 // ErrDepcheckFailed is returned by runDaemon when depcheck reports at least
@@ -113,6 +114,36 @@ func RunDaemonOnly(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logge
 // during the test run.
 func StdoutWriter() *os.File { return os.Stdout }
 
+// openAuditOrNoop opens the JSON-lines audit log on disk. Returns the
+// logger plus a close-helper that runDaemon defers. On open error the
+// returned logger is a no-op and the close-helper is a no-op; the daemon
+// must keep running even when audit cannot be persisted.
+func openAuditOrNoop(log *slog.Logger) (auditLogger stt.AuditLogger, closer func()) {
+	file, err := sysd.OpenAuditLog()
+	if err != nil {
+		log.Warn("voice: open audit log failed; cloud STT will not be audited",
+			slog.Any("err", err),
+		)
+
+		return stt.NoopAuditLogger{}, func() {}
+	}
+
+	path, pathErr := sysd.AuditLogPath()
+	if pathErr != nil {
+		path = "<unknown>"
+	}
+
+	log.Info("voice: audit log open", slog.String("path", path))
+
+	closer = func() {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Warn("voice: close audit log failed", slog.Any("err", closeErr))
+		}
+	}
+
+	return stt.NewJSONLAuditLogger(file), closer
+}
+
 // checkDaemonDeps runs depcheck and logs any missing dependencies.
 // Missing required deps are logged but do NOT abort startup: the daemon
 // brings up the tray + settings UI in a degraded state so the user can
@@ -159,7 +190,10 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) e
 	// stat-only on every subsequent start.
 	EnsureWhisperCppModel(ctx, cfg, log)
 
-	transcriber := buildTranscriberOrLazyStub(ctx, cfg, log)
+	auditLogger, closeAudit := openAuditOrNoop(log)
+	defer closeAudit()
+
+	transcriber := buildTranscriberOrLazyStub(ctx, cfg, auditLogger, log)
 
 	var ownedByDaemon bool
 
@@ -186,6 +220,7 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) e
 	}
 
 	daemon, ownedByDaemon := buildDaemon(cfg, log, transcriber, recorder, voiceOutput)
+	daemon.AttachAudit(auditLogger)
 
 	hotkeyListener, hkErr := factory.BuildHotkey(cfg, log, daemon.HotkeyHandler())
 	if hkErr != nil {
@@ -211,9 +246,10 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) e
 func buildTranscriberOrLazyStub(
 	ctx context.Context,
 	cfg *config.VoiceConfig,
+	audit stt.AuditLogger,
 	log *slog.Logger,
 ) transcribe.Transcriber {
-	transcriber, err := factory.BuildTranscriber(ctx, cfg, log)
+	transcriber, err := factory.BuildTranscriberWithAudit(ctx, cfg, audit, log)
 	if err == nil {
 		return transcriber
 	}

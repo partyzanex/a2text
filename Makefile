@@ -359,6 +359,31 @@ lint-fix: gen
 lint-ci:
 	golangci-lint run -c .golangci.yml
 
+# --- Supply-chain checks ---
+
+# `vuln` scans every reachable function against the official Go vulnerability
+# database (vuln.go.dev). Loud failure when one of the imported modules
+# contains a CVE that the daemon actually calls into. Runs at ~5s once the
+# tool is cached; first run pulls it from the module proxy.
+.PHONY: vuln
+vuln: gen
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+# CI variant: assumes `govulncheck` is preinstalled on PATH (see the CI
+# workflow's "Install govulncheck" step). Skips `gen` for the same reason
+# `lint-ci` skips it — generated files are committed.
+.PHONY: vuln-ci
+vuln-ci:
+	govulncheck ./...
+
+# `verify-modules` re-checks every cached module against the hashes pinned
+# in `go.sum`. `go build` does this implicitly, but a standalone target
+# makes the integrity check explicit in CI logs and surfaces a clear
+# error message if proxy.golang.org or a vendored mirror swapped a tarball.
+.PHONY: verify-modules
+verify-modules:
+	go mod verify
+
 # --- go.mk bootstrap ---
 
 go.mk:

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26.1"
+  GO_VERSION: "1.26.3"
   # Mirror the CGO env Makefile sets so `go test` / `go vet` (driven by
   # golangci-lint) can compile the whisper-tagged files without us having to
   # re-derive the paths in each step.

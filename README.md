@@ -18,33 +18,33 @@ sudo usermod -aG input "$USER"  # log out + log back in for the group to take ef
 
 The kernel input subsystem delivers **every** keypress on every opened device — there is no per-window or per-focus filtering at that layer. To narrow the surface, the daemon now calls `EVIOCGBIT(EV_KEY)` on each device and **keeps only those whose kernel-reported keycap bitmap contains the configured hotkey or one of its modifiers**. Power buttons, lid switches, accelerometers, tablet pens, fingerprint readers, on-screen keyboards, and similar non-keyboards are skipped before any read; on a typical laptop this cuts the daemon's `/dev/input` fd count from ~22 down to 1–2 physical keyboards. The buffer holding each `input_event` is also zeroed immediately after dispatch so a panic + core dump cannot leak recent keystrokes; the example systemd unit additionally sets `LimitCORE=0` to disable core dumps altogether.
 
-If you cannot grant `input` group membership, switch to the GNOME DE-shortcut hotkey backend (`hotkey.backend: auto` falls through to it when evdev is unavailable). The DE-shortcut path is Press-only — hold mode degrades to toggle — but it does not require `/dev/input` access.
+Without `input` group membership the evdev backend cannot start and the daemon refuses to launch.
 
 ### Same-UID trust caveat
 
-**Any process running under your UID is trusted.** The IPC socket and `SO_PEERCRED` UID-match block cross-UID callers (sandbox escapes, other users on a shared host) but do not isolate same-UID processes from each other. A same-UID adversary can:
+**Any process running under your UID is trusted.** A same-UID adversary can:
 
-- send `start`/`stop`/`toggle` over the IPC socket and read recordings from `$TMPDIR`;
-- read the daemon's heap via `/proc/<pid>/mem` (or `ptrace`) and recover any keystroke the evdev reader passed through before the buffer was zeroed;
+- read the daemon's heap via `/proc/<pid>/mem` or `ptrace` and recover keystrokes the evdev reader handled before the buffer was zeroed;
+- read recording byproducts in `$TMPDIR/a2text-voice-*.wav` until the cycle ends;
 - race the autopaste pipeline — though the pre-Paste clipboard race-guard refuses to inject Ctrl+V when the clipboard no longer matches the transcript.
 
-If you run untrusted same-UID code (Electron apps with broad filesystem access, random binaries from `~/Downloads`, sandbox escapes), prefer `output.mode: clipboard` (no autopaste) and the GNOME DE-shortcut backend (no `/dev/input` access).
+If you run untrusted same-UID code, prefer `output.mode: clipboard` (no autopaste).
 
 ### Trust-boundary checklist
 
-- **IPC socket** at `$XDG_RUNTIME_DIR/a2text/a2text-voice.sock` is `0o600` and the daemon rejects cross-UID callers via `SO_PEERCRED`. Same-UID callers (CLI invocations, your shell, *also* any same-UID malware) all get through. Recording byproducts in `$TMPDIR/a2text-voice-*.wav` are readable until the cycle ends.
-- **Autopaste** synthesises Ctrl+V via `/dev/uinput` after every transcription cycle. The pre-Paste clipboard race-guard refuses to fire when the clipboard contents have changed since Deliver, blocking the most direct same-UID keystroke-injection path. Set `output.mode: clipboard` to disable autopaste entirely if you cannot accept the residual risk.
-- **Cloud STT providers** (OpenAI, Deepgram) receive raw audio. Cloud routing is **off by default** — the default config points at local `go-whisper` or `whisper-cpp`. Switching to a cloud provider in the settings UI uploads audio to that vendor; review their data-retention policy before enabling.
+- **Single-instance lock** at `$XDG_RUNTIME_DIR/a2text/a2text-voice.pid` (flock, `0o600`). Second invocation exits with a stderr message and non-zero status.
+- **Autopaste** synthesises Ctrl+V via `/dev/uinput` after every transcription cycle. The pre-Paste clipboard race-guard refuses to fire when the clipboard contents have changed since Deliver, blocking the most direct same-UID keystroke-injection path. Set `output.mode: clipboard` to disable autopaste entirely.
+- **Cloud STT providers** (OpenAI, Deepgram) receive raw audio. Cloud routing is **off by default** — the default config points at local `go-whisper` or `whisper-cpp`. Switching to a cloud provider uploads audio to that vendor; review their data-retention policy before enabling.
 - **whisper.cpp models** are downloaded from HuggingFace mirrors. The downloader does not yet verify SHA-256 against a pinned manifest. Audit the model file before pointing the daemon at it on hostile networks.
-- **API keys** in `~/.config/a2text/config.yaml` are stored as plaintext YAML. Use a per-user encrypted home or the `A2TEXT_*_API_KEY` env vars (which the daemon reads from systemd `EnvironmentFile=` if you do not want them on disk). A libsecret/keyring backend is on the roadmap.
-- **Audit trail** lives at `$XDG_DATA_HOME/a2text/audit.log` (default `~/.local/share/a2text/audit.log`). Append-only, `0o600`. Records IPC accepts (peer PID/UID) and autopaste fires. Rotate manually; the daemon does not.
+- **API keys** in `~/.config/a2text/config.yaml` are plaintext YAML. Use the `A2TEXT_*_API_KEY` env vars (daemon reads them from systemd `EnvironmentFile=`) if you do not want them on disk.
+- **Audit trail** at `$XDG_DATA_HOME/a2text/audit.log` (default `~/.local/share/a2text/audit.log`). Append-only, `0o600`. Records cloud STT calls (provider, endpoint, HTTP status, audio sha256, transcript length). Rotate manually.
 
 ## Features
 
 ### Recording & transcription
 
 - **Push-to-talk hold mode** and **click-to-toggle mode** — `hotkey.mode: hold | toggle`. Hold needs a backend that sees both Press and Release (`evdev`).
-- **Two hotkey backends**: `evdev` (reads `/dev/input/event*`, sees Press/Release on any session — requires `input` group membership) and `auto` (Wayland → evdev, X11 → XGrabKey when built with `-tags=x11`, otherwise registers a GNOME custom-keybinding that is Press-only).
+- **Hotkey backend**: `evdev` (reads `/dev/input/event*`, sees Press/Release on any session — requires `input` group membership). On X11 builds (`-tags=x11`) `auto` falls through to XGrabKey.
 - **Multiple STT providers** with the same wire protocol: local `whisper-cpp` (CGo, offline), remote `go-whisper` HTTP service, OpenAI cloud, Deepgram cloud (incl. streaming).
 - **Fallback chain** and **retry decorator** — primary/secondary providers with exponential-backoff retries (`stt_retry`).
 - **Silence gate** (`capture.silence_threshold_dbfs`) skips STT when the recording is below the dBFS threshold — saves API calls and avoids hallucinated transcripts from background noise.
@@ -62,10 +62,9 @@ If you run untrusted same-UID code (Electron apps with broad filesystem access, 
 
 - **System-tray icon** with state-driven menu (idle / recording / transcribing / error).
 - **Fyne v2 settings window** with live validation, debounced auto-save, and i18n (ru, en).
-- **Self-bootstrap** — running `a2text` with no arguments and no live daemon socket starts one and sends `toggle` once the socket is ready.
+- **Single-instance daemon** — flock-based PID lock; second invocation exits with a stderr notice.
 - **Autostart on login** — toggle in the settings UI writes an XDG `.desktop` file under `~/.config/autostart/`.
 - **First-run model download** — `whisper-cpp` provider auto-fetches `ggml-tiny.bin` into the XDG data dir; bigger models come from the **Download model** dialog.
-- **IPC over Unix socket** — `toggle`, `start`, `stop`, `ping` (see [IPC protocol](#ipc-protocol)).
 - **Audio archive** (optional) — keep every recording as WAV or OGG under `privacy.keep_audio_dir`.
 - **Transcript log** (optional) — `privacy.log_transcript`. Off by default.
 
@@ -74,13 +73,13 @@ If you run untrusted same-UID code (Electron apps with broad filesystem access, 
 | Tab | What you configure |
 |---|---|
 | **STT** | Active provider, model picker, language, retry/fallback chain, provider-specific credentials (OpenAI / Deepgram / go-whisper URL). |
-| **Capture & Hotkey** | Capture backend (auto / pw-record / parec), sample rate, channels, silence threshold, max recording duration; hotkey key + modifiers, mode (toggle / hold), backend (auto / evdev / none), autopaste command. |
+| **Capture & Hotkey** | Capture backend (auto / pw-record / parec), sample rate, channels, silence threshold, max recording duration; hotkey key + modifiers, mode (toggle / hold), backend (evdev / none), autopaste command. |
 | **Output** | Output mode (stdout / clipboard / clipboard-autopaste), restore-clipboard toggle. |
 | **Privacy** | Transcript logging, audio archive (off / wav / ogg), archive directory. |
 | **Process** | Autostart on login, temp directory, log level, UI language, shutdown grace period. |
 | **About** | Version, commit, build info, links. |
 
-> Hold mode + naked function key (e.g. F4) requires `backend: evdev` (or `auto` under Wayland). The GNOME DE shortcut path is Press-only and will degrade hold to repeated toggle on key autorepeat.
+> Hold mode requires `backend: evdev`. The X11 XGrabKey fallback is Press-only.
 
 ## Quick start
 
@@ -93,14 +92,12 @@ If you run untrusted same-UID code (Electron apps with broad filesystem access, 
 make build
 make install            # → ~/.local/bin/a2text                  (non-root)
 sudo make install       # → /usr/local/bin/a2text                (root)
-a2text                  # start daemon + tray + settings UI (auto-registers the GNOME hotkey)
+a2text                  # start daemon + tray + settings UI
 ```
 
-`make install-user` / `make install-system` pin the layout explicitly, useful when you want to force one even though the caller's UID says otherwise.
+`make install-user` / `make install-system` pin the layout explicitly.
 
-The hotkey is auto-registered on every daemon start: a2text reads `hotkey.key` / `hotkey.modifiers` from the config and (on GNOME) installs the corresponding `custom-keybinding` in dconf. If the same binding is already in place the call is a silent no-op, so restarts cost nothing. Change the key in the settings UI or in `~/.config/a2text/config.yaml` and the next daemon start picks it up.
-
-Default binding is **Super+R** (`hotkey.key: "R"`, `hotkey.modifiers: ["super"]`). Press the hotkey to start/stop recording. The transcript lands in the clipboard and is auto-pasted into the active window.
+The daemon binds the hotkey via evdev on every start — `hotkey.key` / `hotkey.modifiers` from the config. Default binding is **Super+R** (`hotkey.key: "R"`, `hotkey.modifiers: ["super"]`). Press the hotkey to start/stop recording. The transcript lands in the clipboard and is auto-pasted into the active window.
 
 ### Autostart on login
 
@@ -127,7 +124,7 @@ When `DESTDIR` is non-empty the install skips `update-desktop-database` / `gtk-u
 
 ## Requirements
 
-- **Go ≥ 1.26.1** (see `go.mod`)
+- **Go ≥ 1.26.3** (see `go.mod`)
 - **System packages** (Ubuntu 22.04 / 24.04):
 
 ```bash
@@ -150,8 +147,6 @@ sudo apt install -y \
 | **Clipboard** | `wl-clipboard xclip` | Wayland (`wl-copy`/`wl-paste`) + X11 (`xclip`) clipboard backends |
 | **Autopaste** | `wtype ydotool xdotool` | See backend table below. `auto` mode tries them in order. |
 | **Dialogs** | `zenity` (optional: `kdialog` for KDE) | Native folder picker in settings UI; Fyne fallback works without them. |
-
-Hotkey auto-register on GNOME uses `gsettings` from `libglib2.0-bin`, which Ubuntu ships by default with the desktop — no extra install in normal setups.
 
 ### Autopaste backends
 
@@ -199,21 +194,14 @@ Select via `output.autopaste_command` in config, or let `auto` choose.
 ## CLI reference
 
 ```bash
-a2text                          # toggle recording (or self-bootstrap as daemon)
-a2text --daemon                 # start as daemon only (for systemd units)
+a2text                          # start daemon (tray + settings UI)
+a2text --daemon                 # explicit daemon mode (for systemd units)
 a2text --provider whisper-cpp   # override STT provider for this invocation
 a2text --lang en                # override language
 a2text --log-level debug        # override log level
 a2text --config /path/to/cfg    # use a custom config file
 a2text --pprof 127.0.0.1:6060   # enable pprof endpoint
 ```
-
-Hidden developer flags (not shown in `--help`):
-
-| Flag | Purpose |
-|---|---|
-| `--file PATH` | Transcribe a single audio file to stdout |
-| `--record DURATION` | Record from mic for the given duration, transcribe, print to stdout |
 
 ### Environment variables
 
@@ -227,18 +215,6 @@ All config keys can be overridden via `A2TEXT_`-prefixed env vars (`.` becomes `
 | `A2TEXT_CONFIG` | Config file path |
 | `A2TEXT_OPENAI_API_KEY` | `openai.api_key` |
 | `A2TEXT_DEEPGRAM_API_KEY` | `deepgram.api_key` |
-
-## IPC protocol
-
-The daemon listens on `$XDG_RUNTIME_DIR/a2text/a2text-voice.sock`. Connect via `socat`:
-
-```bash
-echo '{"version": 1, "id": "1", "command": "toggle"}' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/a2text/a2text-voice.sock
-```
-
-**Commands:** `toggle`, `start`, `stop`, `ping`
-
-**Response fields:** `ok`, `state` (idle/recording/transcribing/error), `message`, `last_error`, `error_code`.
 
 ## Configuration
 
@@ -288,7 +264,7 @@ hotkey:
   key: "R"
   modifiers: ["super"]            # super | ctrl | alt | shift
   mode: "toggle"                  # toggle | hold
-  backend: "auto"                 # auto | evdev | none
+  backend: "evdev"                # evdev | none
 
 stt_retry:
   enabled: false
@@ -303,7 +279,6 @@ privacy:
   keep_audio_format: "wav"        # wav | ogg
 
 daemon:
-  socket_path: ""
   shutdown_grace_period: "15s"
 
 log_level: "info"                 # debug | info | warn | error
@@ -318,7 +293,6 @@ internal/
   domain/             # Sentinel errors, core types (zero deps)
   usecases/voice/     # Voice state machine, record/transcribe orchestration
   usecases/transcribe/# Transcriber interface (used by consumers, DIP)
-  adapters/ipc/       # Unix-socket client/server protocol
   adapters/output/    # Stdout, clipboard, autopaste delivery
   adapters/settings/  # Fyne v2 settings window
   adapters/tray/      # System tray icon + state-driven menu
@@ -327,11 +301,10 @@ internal/
   infra/autostart/    # XDG `.desktop` autostart entry (per-user enable/disable)
   infra/cli/          # CLI (urfave/cli v3)
   infra/config/       # Viper-backed YAML config with strict validation
-  infra/daemon/       # Daemon lifecycle, self-bootstrap, IPC socket, model bootstrap
+  infra/daemon/       # Daemon lifecycle, single-instance lock, model bootstrap
   infra/depcheck/     # Runtime dependency probes (pw-record, wl-copy, …)
   infra/factory/      # DI wiring (transcriber, capture, clipboard, autopaste)
-  infra/setup/        # GNOME shortcut registration
-  infra/sysd/         # XDG paths (config, data, runtime), socket location, PID-file helpers
+  infra/sysd/         # XDG paths (config, data, runtime), PID-file + audit log helpers
 pkg/
   audio/              # ffmpeg-based audio conversion, probing, RMS
   audio/wav/          # WAV decoder (pcm_s16le, 16 kHz, mono)
@@ -354,7 +327,7 @@ The project follows **Onion (Clean) Architecture** and **SOLID**:
 |---|---|---|
 | `domain` | stdlib only | Sentinel errors, value objects |
 | `usecases` | domain + stdlib | Business logic, interface definitions (DIP) |
-| `adapters` | usecases + domain + stdlib | IPC, UI, tray, output delivery |
+| `adapters` | usecases + domain + stdlib | UI, tray, output delivery |
 | `infra` | all layers (composition root) | CLI, config, DI factories, daemon lifecycle |
 
 Key principles:

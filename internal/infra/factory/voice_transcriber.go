@@ -32,6 +32,18 @@ const (
 //
 //nolint:ireturn // returns transcribe.Transcriber defined in usecases (consumer owns the interface, per DIP)
 func BuildTranscriber(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger) (transcribe.Transcriber, error) {
+	return BuildTranscriberWithAudit(ctx, cfg, nil, log)
+}
+
+// BuildTranscriberWithAudit is BuildTranscriber plus an AuditLogger that
+// receives one event per cloud STT request (OpenAI, Deepgram). Local
+// providers (go-whisper, whisper-cpp) ignore the audit — no audio
+// crosses the host boundary on those paths.
+//
+//nolint:ireturn // see BuildTranscriber
+func BuildTranscriberWithAudit(
+	ctx context.Context, cfg *config.VoiceConfig, audit stt.AuditLogger, log *slog.Logger,
+) (transcribe.Transcriber, error) {
 	if cfg == nil {
 		// Nil cfg is a programming error — the call path always has a loaded config.
 		return nil, errors.New("BuildTranscriber: nil config")
@@ -58,6 +70,7 @@ func BuildTranscriber(ctx context.Context, cfg *config.VoiceConfig, log *slog.Lo
 		CloudEnabled:   false,
 		ModelPath:      cfg.ModelPath,
 		EagerLoadModel: false, // depcheck covers reachability; lazy-check on first use
+		Audit:          audit,
 	}, log)
 	if err != nil {
 		return nil, fmt.Errorf("transcriber: %w", err)

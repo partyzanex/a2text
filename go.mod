@@ -1,11 +1,12 @@
 module github.com/partyzanex/a2text
 
-go 1.26.1
+go 1.26.3
 
 require (
 	fyne.io/fyne/v2 v2.7.4
 	fyne.io/systray v1.12.1
 	github.com/coreos/go-systemd/v22 v22.7.0
+	github.com/deepgram/deepgram-go-sdk/v3 v3.5.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/moby/moby/api v1.54.2
 	github.com/partyzanex/shutdown v0.4.0
@@ -20,15 +21,13 @@ require (
 
 require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
-	github.com/deepgram/deepgram-go-sdk/v3 v3.5.0 // indirect
 	github.com/dvonthenen/websocket v1.5.1-dyv.2 // indirect
-	github.com/fatih/color v1.15.0 // indirect
-	github.com/gorilla/schema v1.3.0 // indirect
+	github.com/fatih/color v1.19.0 // indirect
+	github.com/gorilla/schema v1.4.1 // indirect
 	github.com/hokaccha/go-prettyjson v0.0.0-20211117102719-0474bc63780f // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.17 // indirect
-	k8s.io/klog/v2 v2.110.1 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
+	k8s.io/klog/v2 v2.140.0 // indirect
 )
 
 require (
@@ -109,7 +108,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/image v0.40.0 // indirect
+	golang.org/x/image v0.40.0
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/text v0.37.0
 )

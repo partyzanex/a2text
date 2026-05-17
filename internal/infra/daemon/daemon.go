@@ -15,6 +15,7 @@ import (
 	"github.com/partyzanex/a2text/internal/infra/factory"
 	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
+	"github.com/partyzanex/a2text/pkg/stt"
 )
 
 const (
@@ -77,6 +78,11 @@ type Daemon struct {
 	// holdGate debounces hold-mode Press/Release pairs that are too short
 	// to be real recording attempts (accidental taps, key bounces).
 	holdGate holdGate
+
+	// audit receives one event per cloud STT request. Wired by
+	// AttachAudit; nil falls back to a no-op so ReloadTranscriber can
+	// always pass a non-nil value into the factory.
+	audit stt.AuditLogger
 
 	// Cycle cancellation is split: cycleCancel kills the whole pipeline
 	// (used for "discard" and shutdown), recordingCancel kills only the
@@ -217,7 +223,7 @@ func (d *Daemon) ReloadTranscriber(ctx context.Context) {
 	d.reloadMu.Lock()
 	defer d.reloadMu.Unlock()
 
-	newTranscriber, err := factory.BuildTranscriber(ctx, d.cfg, d.log)
+	newTranscriber, err := factory.BuildTranscriberWithAudit(ctx, d.cfg, d.audit, d.log)
 	if err != nil {
 		d.log.Warn("voice: reload transcriber failed; keeping current backend",
 			slog.String("provider", d.cfg.Provider),
@@ -269,6 +275,16 @@ func (d *Daemon) ReloadOutput(ctx context.Context) {
 
 	d.useCase.SwapOutput(newOutput)
 	d.log.Info("voice: output reloaded")
+}
+
+// AttachAudit wires the AuditLogger used by cloud STT transcribers.
+// Idempotent; passing nil restores the no-op default.
+func (d *Daemon) AttachAudit(audit stt.AuditLogger) {
+	if audit == nil {
+		audit = stt.NoopAuditLogger{}
+	}
+
+	d.audit = audit
 }
 
 // AttachHotkey wires an optional global hotkey listener. Must be called

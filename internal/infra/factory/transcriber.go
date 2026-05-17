@@ -73,6 +73,12 @@ type Config struct {
 	// download or HTTP health check). The bot uses it for fail-fast startup;
 	// the voice CLI omits it and relies on depcheck instead.
 	EagerLoadModel bool
+
+	// Audit, when non-nil, receives one AuditEvent per cloud STT request
+	// (OpenAI, Deepgram). nil leaves cloud transcribers unaudited.
+	// Local providers (go-whisper, whisper-cpp) ignore this field — no
+	// audio crosses the host boundary on those paths.
+	Audit stt.AuditLogger
 }
 
 // Build constructs the STT transcriber described by cfg. It is safe to call
@@ -178,7 +184,13 @@ func buildOpenAI(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error) 
 	)
 	// nil http.Client — use the default transport. OpenAI adapter has no
 	// local MaxFileSize guard; the API enforces its own upload limits.
-	return stt.NewOpenAITranscriber(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, nil, log), nil
+	tr := stt.NewOpenAITranscriber(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, nil, log).
+		WithModel(cfg.OpenAIModel)
+	if cfg.Audit != nil {
+		tr = tr.WithAudit(cfg.Audit)
+	}
+
+	return tr, nil
 }
 
 //nolint:ireturn // returns transcribe.Transcriber defined in usecases (consumer owns the interface, per DIP)
@@ -206,7 +218,13 @@ func buildDeepgram(cfg *Config, log *slog.Logger) (transcribe.Transcriber, error
 		slog.String("model", cfg.DeepgramModel),
 	)
 
-	return stt.NewDeepgramTranscriber(cfg.DeepgramAPIKey, cfg.DeepgramBaseURL, cfg.MaxFileSize, log), nil
+	tr := stt.NewDeepgramTranscriber(cfg.DeepgramAPIKey, cfg.DeepgramBaseURL, cfg.MaxFileSize, log).
+		WithModel(cfg.DeepgramModel)
+	if cfg.Audit != nil {
+		tr = tr.WithAudit(cfg.Audit)
+	}
+
+	return tr, nil
 }
 
 // sanitizeURL strips userinfo from a URL before logging to avoid writing

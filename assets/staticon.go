@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -110,11 +111,19 @@ func AppIcon() fyne.Resource {
 	return fyne.NewStaticResource("a2text.png", StateIconPNG(body))
 }
 
+// encodePNG serialises an in-memory NRGBA into a PNG byte slice. The
+// error path is unreachable in practice (bytes.Buffer.Write never fails
+// for a valid NRGBA), but logging + nil return is preferred over a
+// panic so a stdlib regression or OOM does not abort the daemon.
 func encodePNG(img *image.NRGBA) []byte {
 	var buf bytes.Buffer
 
 	if err := png.Encode(&buf, img); err != nil {
-		panic(fmt.Sprintf("assets: png encode: %v", err))
+		slog.Error("assets: png encode failed; returning empty icon",
+			slog.String("error", fmt.Sprintf("%v", err)),
+		)
+
+		return nil
 	}
 
 	return buf.Bytes()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log/slog"
 
 	"github.com/partyzanex/a2text/assets"
 	"github.com/partyzanex/a2text/internal/domain"
@@ -64,11 +65,19 @@ func (tr *Tray) iconFor(state domain.State) []byte {
 
 // encodePNG is the shared PNG encoder for the fallback circleIcon path.
 // SVG-backed icons go through assets.StateIconPNG which encodes there.
+// On failure (unreachable for in-memory bytes.Buffer + valid NRGBA, but
+// guarded so a stdlib regression or OOM does not bring the daemon down)
+// the function logs and returns nil; the tray library falls back to a
+// generic indicator icon.
 func encodePNG(img *image.NRGBA) []byte {
 	var buf bytes.Buffer
 
 	if err := png.Encode(&buf, img); err != nil {
-		panic(fmt.Sprintf("tray: encodePNG: png.Encode: %v", err))
+		slog.Error("tray: png encode failed; returning empty icon",
+			slog.String("error", fmt.Sprintf("%v", err)),
+		)
+
+		return nil
 	}
 
 	return buf.Bytes()

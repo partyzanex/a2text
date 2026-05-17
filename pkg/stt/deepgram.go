@@ -24,8 +24,10 @@ const (
 type DeepgramTranscriber struct {
 	client      *http.Client
 	log         *slog.Logger
+	audit       AuditLogger
 	apiKey      string
 	apiURL      string
+	model       string
 	maxFileSize int64
 }
 
@@ -94,7 +96,30 @@ func NewDeepgramTranscriber(apiKey, apiURL string, maxFileSize int64, log *slog.
 		maxFileSize: maxFileSize,
 		client:      &http.Client{Timeout: deepgramAPITimeout},
 		log:         log,
+		audit:       NoopAuditLogger{},
 	}
+}
+
+// WithAudit attaches an AuditLogger so every Transcribe call records a
+// metadata-only event in the audit trail. Passing nil restores the
+// no-op default.
+func (d *DeepgramTranscriber) WithAudit(audit AuditLogger) *DeepgramTranscriber {
+	if audit == nil {
+		audit = NoopAuditLogger{}
+	}
+
+	d.audit = audit
+
+	return d
+}
+
+// WithModel records the Deepgram model name (e.g. "nova-2") in audit
+// events. Deepgram binds the model via apiURL query string; the audit
+// label is informational only.
+func (d *DeepgramTranscriber) WithModel(model string) *DeepgramTranscriber {
+	d.model = model
+
+	return d
 }
 
 // Name returns the transcriber name.
@@ -145,32 +170,32 @@ func parseDeepgramResponse(body []byte) (string, error) {
 
 // Transcribe sends the audio file to Deepgram API for transcription.
 func (d *DeepgramTranscriber) Transcribe(ctx context.Context, wavPath, lang string) (string, error) {
-	if err := validateWavPath(wavPath); err != nil {
-		return "", err
+	event, finish := d.startAudit(wavPath, lang)
+	defer finish()
+
+	text, err := d.transcribeOnce(ctx, wavPath, lang, event)
+
+	classifyOutcome(event, text, err)
+
+	return text, err
+}
+
+// classifyOutcome maps the (text, err) result of a cloud STT call to one
+// of the AuditOutcome* buckets. Shared between OpenAI and Deepgram so
+// the schema stays consistent across providers.
+func classifyOutcome(event *AuditEvent, text string, err error) {
+	switch {
+	case err != nil && event.HTTPStatus == 0:
+		event.Outcome = AuditOutcomeNetworkErr
+	case err != nil:
+		event.Outcome = httpStatusBucket(event.HTTPStatus)
+	case text == "":
+		event.Outcome = AuditOutcomeEmpty
+	default:
+		event.Outcome = AuditOutcomeOK
+		event.TextLen = len(text)
+		event.TextSHA256 = hashString(text)
 	}
-
-	file, err := os.Open(filepath.Clean(wavPath))
-	if err != nil {
-		return "", fmt.Errorf("%w: failed to open audio file: %w", sttx.ErrTranscribeFailed, err)
-	}
-
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			d.log.Debug("failed to close audio file", slog.String("path", wavPath))
-		}
-	}()
-
-	err = d.validateFileSize(file)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := d.buildRequest(ctx, lang, file)
-	if err != nil {
-		return "", err
-	}
-
-	return d.executeRequest(req, wavPath, lang)
 }
 
 // DetectLanguage returns "auto" since Deepgram API auto-detects language.
@@ -186,6 +211,83 @@ func (d *DeepgramTranscriber) ReloadModel(_ string) error { return nil }
 
 // Close is a no-op — no resources to release.
 func (d *DeepgramTranscriber) Close() error { return nil }
+
+// startAudit builds the per-request AuditEvent and returns a finalizer
+// that records ElapsedMs and emits the event into the audit log.
+func (d *DeepgramTranscriber) startAudit(wavPath, lang string) (event *AuditEvent, finish func()) {
+	audioBytes, audioDur, audioHash := captureAudioMetrics(wavPath)
+
+	event = &AuditEvent{
+		Timestamp:     time.Now().UTC(),
+		Provider:      AuditProviderDeepgram,
+		Endpoint:      d.apiURL,
+		Model:         d.model,
+		Lang:          lang,
+		AudioBytes:    audioBytes,
+		AudioDuration: audioDur,
+		AudioSHA256:   audioHash,
+	}
+
+	started := time.Now()
+
+	finish = func() {
+		event.ElapsedMs = time.Since(started).Milliseconds()
+		d.audit.LogEvent(event)
+	}
+
+	return event, finish
+}
+
+// transcribeOnce executes a single Deepgram request and returns the
+// transcript plus any error. HTTP status and request ID land on the
+// passed-in event so the caller can finish the audit row.
+func (d *DeepgramTranscriber) transcribeOnce(
+	ctx context.Context, wavPath, lang string, event *AuditEvent,
+) (text string, err error) {
+	if validateErr := validateWavPath(wavPath); validateErr != nil {
+		event.Outcome = AuditOutcomeBuildErr
+
+		return "", validateErr
+	}
+
+	file, err := os.Open(filepath.Clean(wavPath))
+	if err != nil {
+		event.Outcome = AuditOutcomeBuildErr
+
+		return "", fmt.Errorf("%w: failed to open audio file: %w", sttx.ErrTranscribeFailed, err)
+	}
+
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			d.log.Debug("failed to close audio file", slog.String("path", wavPath))
+		}
+	}()
+
+	if sizeErr := d.validateFileSize(file); sizeErr != nil {
+		event.Outcome = AuditOutcomeBuildErr
+
+		return "", sizeErr
+	}
+
+	req, err := d.buildRequest(ctx, lang, file)
+	if err != nil {
+		event.Outcome = AuditOutcomeBuildErr
+
+		return "", err
+	}
+
+	var (
+		status    int
+		requestID string
+	)
+
+	text, status, requestID, err = d.executeRequestAudited(req, wavPath, lang)
+
+	event.HTTPStatus = status
+	event.RequestID = requestID
+
+	return text, err
+}
 
 // validateFileSize checks that the audio file does not exceed the configured limit.
 func (d *DeepgramTranscriber) validateFileSize(file *os.File) error {
@@ -222,13 +324,17 @@ func (d *DeepgramTranscriber) buildRequest(ctx context.Context, lang string, bod
 	return req, nil
 }
 
-// executeRequest sends the request and parses the transcription response.
-func (d *DeepgramTranscriber) executeRequest(req *http.Request, wavPath, lang string) (string, error) {
+// executeRequestAudited sends the request, parses the response and
+// returns the HTTP status code + request ID needed to populate the
+// audit event alongside the transcript.
+func (d *DeepgramTranscriber) executeRequestAudited(
+	req *http.Request, wavPath, lang string,
+) (transcript string, status int, requestID string, err error) {
 	d.log.Info("sending request to Deepgram API", slog.String("wav", wavPath), slog.String("lang", lang))
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: request failed: %w", sttx.ErrTranscribeFailed, err)
+		return "", 0, "", fmt.Errorf("%w: request failed: %w", sttx.ErrTranscribeFailed, err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -236,32 +342,37 @@ func (d *DeepgramTranscriber) executeRequest(req *http.Request, wavPath, lang st
 		}
 	}()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBodySize))
-	if err != nil {
-		return "", fmt.Errorf("%w: failed to read response: %w", sttx.ErrTranscribeFailed, err)
+	status = resp.StatusCode
+
+	requestID = resp.Header.Get("Dg-Request-Id")
+	if requestID == "" {
+		requestID = resp.Header.Get("X-Request-Id")
 	}
 
-	// Surface the raw response at debug so users can see exactly what
-	// Deepgram returned — useful for diagnosing schema drift, partial
-	// transcripts, or unexpected fields without rerunning with curl.
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRespBodySize))
+	if readErr != nil {
+		return "", status, requestID,
+			fmt.Errorf("%w: failed to read response: %w", sttx.ErrTranscribeFailed, readErr)
+	}
+
 	d.log.Debug("deepgram response",
 		slog.Int("status", resp.StatusCode),
 		slog.String("body", string(respBody)),
 	)
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf(
+		return "", status, requestID, fmt.Errorf(
 			"%w: Deepgram API returned status %d: %s",
 			sttx.ErrTranscribeFailed, resp.StatusCode, string(respBody),
 		)
 	}
 
-	transcript, err := parseDeepgramResponse(respBody)
+	transcript, err = parseDeepgramResponse(respBody)
 	if err != nil {
-		return "", err
+		return "", status, requestID, err
 	}
 
 	d.log.Info("transcription complete", slog.Int("result_len", len(transcript)))
 
-	return transcript, nil
+	return transcript, status, requestID, nil
 }

@@ -28,8 +28,10 @@ const (
 type OpenAITranscriber struct {
 	client  *http.Client
 	log     *slog.Logger
+	audit   AuditLogger
 	apiKey  string
 	baseURL string
+	model   string
 }
 
 // NewOpenAITranscriber creates an OpenAITranscriber.
@@ -48,7 +50,36 @@ func NewOpenAITranscriber(apiKey, baseURL string, client *http.Client, log *slog
 		log = slog.Default()
 	}
 
-	return &OpenAITranscriber{apiKey: apiKey, baseURL: baseURL, client: client, log: log}
+	return &OpenAITranscriber{
+		apiKey:  apiKey,
+		baseURL: baseURL,
+		client:  client,
+		log:     log,
+		audit:   NoopAuditLogger{},
+	}
+}
+
+// WithAudit attaches an AuditLogger so every Transcribe call records a
+// metadata-only event in the audit trail. Returns the receiver for
+// chaining. Passing nil restores the no-op default.
+func (t *OpenAITranscriber) WithAudit(audit AuditLogger) *OpenAITranscriber {
+	if audit == nil {
+		audit = NoopAuditLogger{}
+	}
+
+	t.audit = audit
+
+	return t
+}
+
+// WithModel records the model name (e.g. "whisper-1") in audit events.
+// OpenAI's audio.transcriptions endpoint binds the model in the request
+// body via buildBody; the constructor does not need it directly. Audit
+// only cares for traceability.
+func (t *OpenAITranscriber) WithModel(model string) *OpenAITranscriber {
+	t.model = model
+
+	return t
 }
 
 // LoadModel is a no-op — no local model needed for the cloud transcriber.
@@ -67,15 +98,63 @@ func (t *OpenAITranscriber) Close() error { return nil }
 
 // Transcribe uploads wavPath to the OpenAI Whisper API and returns the transcription.
 func (t *OpenAITranscriber) Transcribe(ctx context.Context, wavPath, lang string) (string, error) {
+	url := t.baseURL + "/v1/audio/transcriptions"
+
+	event, finish := t.startAudit(url, wavPath, lang)
+	defer finish()
+
+	text, err := t.transcribeOnce(ctx, url, wavPath, lang, event)
+	if err == nil {
+		classifyOutcome(event, text, nil)
+		t.log.Info("openai transcription complete", slog.Int("result_len", len(text)))
+	}
+
+	return text, err
+}
+
+// startAudit captures the request metadata and returns a finaliser that
+// records ElapsedMs and emits the event into the audit log.
+func (t *OpenAITranscriber) startAudit(url, wavPath, lang string) (event *AuditEvent, finish func()) {
+	audioBytes, audioDur, audioHash := captureAudioMetrics(wavPath)
+
+	event = &AuditEvent{
+		Timestamp:     time.Now().UTC(),
+		Provider:      AuditProviderOpenAI,
+		Endpoint:      url,
+		Model:         t.model,
+		Lang:          lang,
+		AudioBytes:    audioBytes,
+		AudioDuration: audioDur,
+		AudioSHA256:   audioHash,
+	}
+
+	started := time.Now()
+
+	finish = func() {
+		event.ElapsedMs = time.Since(started).Milliseconds()
+		t.audit.LogEvent(event)
+	}
+
+	return event, finish
+}
+
+// transcribeOnce performs the multipart upload + JSON decode. event.Outcome
+// is populated on the failure paths; the success outcome is set by the
+// caller via classifyOutcome.
+func (t *OpenAITranscriber) transcribeOnce(
+	ctx context.Context, url, wavPath, lang string, event *AuditEvent,
+) (text string, err error) {
 	body, contentType, err := t.buildBody(wavPath, lang)
 	if err != nil {
+		event.Outcome = AuditOutcomeBuildErr
+
 		return "", err
 	}
 
-	url := t.baseURL + "/v1/audio/transcriptions"
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
+		event.Outcome = AuditOutcomeBuildErr
+
 		return "", fmt.Errorf("%w: create request: %w", sttx.ErrTranscribeFailed, err)
 	}
 
@@ -84,36 +163,49 @@ func (t *OpenAITranscriber) Transcribe(ctx context.Context, wavPath, lang string
 
 	resp, err := t.client.Do(req)
 	if err != nil {
+		event.Outcome = AuditOutcomeNetworkErr
+
 		return "", fmt.Errorf("%w: http: %w", sttx.ErrTranscribeFailed, err)
 	}
+
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			t.log.Warn("close response body", slog.String("error", closeErr.Error()))
 		}
 	}()
 
-	if resp.StatusCode != http.StatusOK {
-		b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRespBodySize))
-		if readErr != nil {
-			return "", fmt.Errorf(
-				"%w: api status %d (body unreadable: %w)",
-				sttx.ErrTranscribeFailed, resp.StatusCode, readErr,
-			)
-		}
+	event.HTTPStatus = resp.StatusCode
+	event.RequestID = resp.Header.Get("X-Request-Id")
 
-		return "", fmt.Errorf("%w: api status %d: %s", sttx.ErrTranscribeFailed, resp.StatusCode, string(b))
+	if resp.StatusCode != http.StatusOK {
+		event.Outcome = httpStatusBucket(resp.StatusCode)
+
+		return "", readOpenAIErrorBody(resp)
 	}
 
 	var result struct {
 		Text string `json:"text"`
 	}
-	if err = json.NewDecoder(io.LimitReader(resp.Body, maxRespBodySize)).Decode(&result); err != nil {
-		return "", fmt.Errorf("%w: decode response: %w", sttx.ErrTranscribeFailed, err)
+	if decErr := json.NewDecoder(io.LimitReader(resp.Body, maxRespBodySize)).Decode(&result); decErr != nil {
+		event.Outcome = AuditOutcomeDecodeErr
+
+		return "", fmt.Errorf("%w: decode response: %w", sttx.ErrTranscribeFailed, decErr)
 	}
 
-	t.log.Info("openai transcription complete", slog.Int("result_len", len(result.Text)))
-
 	return result.Text, nil
+}
+
+// readOpenAIErrorBody packages the non-2xx response body into a typed error.
+func readOpenAIErrorBody(resp *http.Response) error {
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRespBodySize))
+	if readErr != nil {
+		return fmt.Errorf(
+			"%w: api status %d (body unreadable: %w)",
+			sttx.ErrTranscribeFailed, resp.StatusCode, readErr,
+		)
+	}
+
+	return fmt.Errorf("%w: api status %d: %s", sttx.ErrTranscribeFailed, resp.StatusCode, string(b))
 }
 
 // buildBody creates the multipart request body for the Whisper API.
