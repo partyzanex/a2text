@@ -153,6 +153,7 @@ func (w *Window) Run() {
 
 	fyneApp := app.NewWithID("io.github.partyzanex.a2text")
 	fyneApp.Settings().SetTheme(ui.Theme())
+	fyneApp.SetIcon(assets.AppIcon())
 	w.app = fyneApp
 
 	// A hidden stub window keeps the event loop alive between settings opens;
@@ -232,6 +233,7 @@ func (w *Window) Show() {
 		}
 
 		w.win = w.app.NewWindow("a2text")
+		w.win.SetIcon(assets.AppIcon())
 		w.win.Resize(fyne.NewSize(windowWidth, windowHeight))
 		w.win.SetFixedSize(false)
 		w.win.SetContent(w.buildContent())

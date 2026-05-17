@@ -1,0 +1,20 @@
+[Desktop Entry]
+Name=a2text
+Comment=Voice-to-text dictation daemon
+Exec=/usr/local/bin/a2text
+Icon=io.github.partyzanex.a2text
+Type=Application
+Categories=Utility;Accessibility;
+# StartupWMClass must match the window's WM_CLASS. Fyne (via GLFW) does
+# not set GLFW_X11_CLASS_NAME, so GLFW falls back to argv[0] basename →
+# the running window's WM_CLASS is "a2text", not the Fyne app ID
+# "io.github.partyzanex.a2text". GNOME/KDE bind the dock entry to this
+# .desktop file by matching StartupWMClass against that runtime value
+# and pull Icon= from here; without the match the dock falls back to a
+# generic placeholder or the X11 _NET_WM_ICON (Fyne's default).
+StartupWMClass=a2text
+# NoDisplay keeps the app out of the launcher while still registering it with
+# xdg-desktop-portal, which resolves the caller's app ID by matching
+# /proc/<pid>/exe against Exec= lines in installed .desktop files.
+NoDisplay=true
+Keywords=voice;dictation;transcription;speech;

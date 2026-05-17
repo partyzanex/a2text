@@ -118,7 +118,9 @@ func (s *TrayUnitSuite) TestAllStatesProduceNonEmptyIcons() {
 }
 
 // TestSVGIconsDecodeToCorrectSize verifies that the three state SVG icons
-// decode to valid PNGs at the expected svgIconPx×svgIconPx resolution.
+// decode to valid square PNGs produced by assets.StateIconPNG. The exact
+// pixel size is owned by the assets package; the tray just checks the
+// data is well-formed and non-degenerate.
 func (s *TrayUnitSuite) TestSVGIconsDecodeToCorrectSize() {
 	tr := New(nil, nil, nil, nil)
 
@@ -131,8 +133,10 @@ func (s *TrayUnitSuite) TestSVGIconsDecodeToCorrectSize() {
 		img, format, err := image.Decode(bytes.NewReader(data))
 		s.Require().NoError(err, "icon for state %s must decode without error", st)
 		s.Equal("png", format, "icon for state %s must be PNG", st)
-		s.Equal(image.Rect(0, 0, svgIconPx, svgIconPx), img.Bounds(),
-			"icon for state %s must be %dx%d", st, svgIconPx, svgIconPx)
+
+		b := img.Bounds()
+		s.Equal(b.Dx(), b.Dy(), "icon for state %s must be square", st)
+		s.Positive(b.Dx(), "icon for state %s must have non-zero size", st)
 	}
 }
 

@@ -66,15 +66,24 @@ install: build install-desktop
 # shows up in the application menu. Only meaningful on Linux/BSD where
 # $XDG_DATA_HOME/applications is honoured; on macOS/Windows we no-op
 # with a hint so `make install` does not fail there.
+DESKTOP_ID  := io.github.partyzanex.a2text
+DESKTOP_SRC := dist/$(DESKTOP_ID).desktop
+ICON_DIR    := $(XDG_DATA_HOME)/icons/hicolor/64x64/apps
+ICON_OUT    := $(ICON_DIR)/$(DESKTOP_ID).png
+
 .PHONY: install-desktop
 install-desktop:
 ifeq ($(filter $(UNAME_S),Linux FreeBSD OpenBSD NetBSD DragonFly),)
 	@echo "install-desktop: skipping — no XDG desktop entry support on $(UNAME_S)"
 else
-	sed "s|Exec=.*|Exec=$(BIN_OUT)|" dist/a2text.desktop > /tmp/a2text.desktop
-	install -Dm 644 /tmp/a2text.desktop $(XDG_DATA_HOME)/applications/a2text.desktop
-	rm -f /tmp/a2text.desktop
+	sed "s|^Exec=.*|Exec=$(BIN_OUT)|" $(DESKTOP_SRC) > /tmp/$(DESKTOP_ID).desktop
+	install -Dm 644 /tmp/$(DESKTOP_ID).desktop $(XDG_DATA_HOME)/applications/$(DESKTOP_ID).desktop
+	rm -f /tmp/$(DESKTOP_ID).desktop
+	@mkdir -p $(ICON_DIR)
+	go run ./cmd/genappicon > $(ICON_OUT)
+	chmod 644 $(ICON_OUT)
 	update-desktop-database $(XDG_DATA_HOME)/applications/ 2>/dev/null || true
+	gtk-update-icon-cache -q -t $(XDG_DATA_HOME)/icons/hicolor 2>/dev/null || true
 endif
 
 .PHONY: uninstall
@@ -86,8 +95,11 @@ uninstall-desktop:
 ifeq ($(filter $(UNAME_S),Linux FreeBSD OpenBSD NetBSD DragonFly),)
 	@echo "uninstall-desktop: skipping — no XDG desktop entry support on $(UNAME_S)"
 else
+	rm -f $(XDG_DATA_HOME)/applications/$(DESKTOP_ID).desktop
 	rm -f $(XDG_DATA_HOME)/applications/a2text.desktop
+	rm -f $(ICON_OUT)
 	update-desktop-database $(XDG_DATA_HOME)/applications/ 2>/dev/null || true
+	gtk-update-icon-cache -q -t $(XDG_DATA_HOME)/icons/hicolor 2>/dev/null || true
 endif
 
 .PHONY: gen
