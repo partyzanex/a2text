@@ -20,6 +20,8 @@ require (
 )
 
 require (
+	github.com/FyshOS/fancyfs v0.0.0-20251025194026-1f03098ff624 // indirect
+	github.com/anthonynsimon/bild v0.13.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dvonthenen/websocket v1.5.1-dyv.2 // indirect
 	github.com/fatih/color v1.19.0 // indirect
@@ -51,7 +53,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fredbi/uri v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/fyne-io/gl-js v0.2.0 // indirect
+	github.com/fyne-io/gl-js v0.2.1-0.20260315212741-029c47fd27e8 // indirect
 	github.com/fyne-io/glfw-js v0.3.0 // indirect
 	github.com/fyne-io/image v0.1.1 // indirect
 	github.com/fyne-io/oksvg v0.2.0 // indirect
@@ -112,3 +114,5 @@ require (
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/text v0.37.0
 )
+
+replace fyne.io/fyne/v2 => github.com/partyzanex/fyne/v2 v2.0.0-20260517234636-e7d0cd26023d
