@@ -6,20 +6,50 @@ Target platform: **Linux + Wayland** (GNOME tested). X11 fallback is supported v
 
 ## Quick start
 
+`make install` picks the layout from the caller:
+
+- run as a regular user → installs into `$HOME/.local` (no sudo, no system files touched);
+- run via `sudo` → installs into `/usr/local` (system-wide, what `.deb` consumers get).
+
 ```bash
-make build              # build binary with whisper.cpp (CGo, -tags whisper)
-make install            # install to ~/.local/bin/a2text + .desktop entry
-a2text setup            # register F4 as GNOME global shortcut
-a2text                  # start daemon + tray + settings UI
+make build
+make install            # → ~/.local/bin/a2text                  (non-root)
+sudo make install       # → /usr/local/bin/a2text                (root)
+a2text                  # start daemon + tray + settings UI (auto-registers the GNOME hotkey)
 ```
 
-Press **F4** to start/stop recording. The transcript lands in the clipboard and is auto-pasted into the active window.
+`make install-user` / `make install-system` pin the layout explicitly, useful when you want to force one even though the caller's UID says otherwise.
 
-> **Note:** `make install` builds a single self-contained binary. There are no separate `.so` files to manage — whisper.cpp is statically linked via CGo.
+The hotkey is auto-registered on every daemon start: a2text reads `hotkey.key` / `hotkey.modifiers` from the config and (on GNOME) installs the corresponding `custom-keybinding` in dconf. If the same binding is already in place the call is a silent no-op, so restarts cost nothing. Change the key in the settings UI or in `~/.config/a2text/config.yaml` and the next daemon start picks it up.
+
+Default binding is **Super+R** (`hotkey.key: "R"`, `hotkey.modifiers: ["super"]`). Press the hotkey to start/stop recording. The transcript lands in the clipboard and is auto-pasted into the active window.
+
+### Autostart on login
+
+The settings UI exposes an **Autostart** checkbox under the "Process" tab. Toggling it writes (or removes) `$XDG_CONFIG_HOME/autostart/io.github.partyzanex.a2text.desktop` (fallback `~/.config/autostart/`). The entry runs `a2text --daemon` ~5 s into the graphical session so the tray host, clipboard, and DBus are ready before the daemon starts. No YAML flag is involved — the file's presence is the source of truth, so deleting it via GNOME Tweaks immediately reflects back into the checkbox.
+
+### First-run whisper.cpp model
+
+When `provider: whisper-cpp` and `model_path` is empty, the daemon downloads `ggml-tiny.bin` (~75 MB) into `whisper_cpp_models_dir` (default `$XDG_DATA_HOME/a2text/models` → `~/.local/share/a2text/models`) on first start and writes the resolved path back into the config. Pick a heavier model (`ggml-small.bin`, `ggml-large-v3-turbo.bin`, …) from the settings UI's **Download model** dialog once you want better quality on Russian dictation.
+
+> **Note:** `make build` produces a single self-contained binary. whisper.cpp is statically linked via CGo, so there are no `.so` files to ship and `LD_LIBRARY_PATH` is not needed.
+
+### Packaging (DESTDIR)
+
+`install` and `install-system` honour `DESTDIR` for staging into a packaging root. The `.desktop` `Exec=` line and the hicolor icon paths use the real `PREFIX`, not the staging prefix — output is suitable for `dpkg-deb -b`, `rpmbuild`, or `nfpm`.
+
+```bash
+make install DESTDIR=/tmp/pkg PREFIX=/usr
+# →  /tmp/pkg/usr/bin/a2text
+#    /tmp/pkg/usr/share/applications/io.github.partyzanex.a2text.desktop
+#    /tmp/pkg/usr/share/icons/hicolor/{64x64,128x128,256x256}/apps/io.github.partyzanex.a2text.png
+```
+
+When `DESTDIR` is non-empty the install skips `update-desktop-database` / `gtk-update-icon-cache` so the package's postinst hook can run them on the target machine instead.
 
 ## Requirements
 
-- **Go ≥ 1.26** (see `go.mod`; tested with Go 1.26.1)
+- **Go ≥ 1.26.1** (see `go.mod`)
 - **System packages** (Ubuntu 22.04 / 24.04):
 
 ```bash
@@ -29,25 +59,31 @@ sudo apt install -y \
     libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev \
     libxinerama-dev libxi-dev libxxf86vm-dev \
     libayatana-appindicator3-dev libgtk-3-dev \
-    pipewire-pulse wl-clipboard zenity
+    pipewire-bin pipewire-pulse \
+    wl-clipboard wtype ydotool xdotool xclip \
+    zenity
 ```
 
 | Group | Packages | Purpose |
 |---|---|---|
-| **Build** | `build-essential pkg-config cmake` | Compiling Go, CGo, and whisper.cpp |
-| **Audio** | `ffmpeg pipewire-pulse` | Capture via `pw-record` / `parec` + WAV conversion |
-| **GUI** | `libgl1-mesa-dev libgtk-3-dev ...` | Fyne settings window + system tray |
-| **Input** | `wl-clipboard wtype ydotool` | Wayland clipboard and keystroke injection |
+| **Build** | `build-essential pkg-config cmake git curl` | Compiling Go, CGo, whisper.cpp, fetching submodules / models |
+| **Audio** | `ffmpeg pipewire-bin pipewire-pulse` | Capture via `pw-record` (pipewire-bin) / `parec` (pipewire-pulse) + WAV conversion |
+| **GUI** | `libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev libayatana-appindicator3-dev libgtk-3-dev` | Fyne settings window + system tray (XDG/SNI) |
+| **Clipboard** | `wl-clipboard xclip` | Wayland (`wl-copy`/`wl-paste`) + X11 (`xclip`) clipboard backends |
+| **Autopaste** | `wtype ydotool xdotool` | See backend table below. `auto` mode tries them in order. |
+| **Dialogs** | `zenity` (optional: `kdialog` for KDE) | Native folder picker in settings UI; Fyne fallback works without them. |
+
+Hotkey auto-register on GNOME uses `gsettings` from `libglib2.0-bin`, which Ubuntu ships by default with the desktop — no extra install in normal setups.
 
 ### Autopaste backends
 
-| Backend | Wayland | X11 | Notes |
-|---|---|---|---|
-| `uinput` | ✅ | ✅ | Virtual keyboard via `/dev/uinput`. Requires `sudo usermod -aG input $USER` + re-login. |
-| `wtype` | ✅ | ❌ | Wayland virtual-keyboard protocol. Compositor support varies. |
-| `ydotool` | ✅ | ✅ | Needs `ydotoold` running. |
-| `xdotool` | ❌ | ✅ | X11 only. |
-| `auto` | ✅ | ✅ | Picks the first available backend. |
+| Backend | apt package | Wayland | X11 | Notes |
+|---|---|---|---|---|
+| `uinput` | — (kernel) | ✅ | ✅ | Virtual keyboard via `/dev/uinput`. Requires `sudo usermod -aG input $USER` + re-login. No extra package — module is built into the kernel. |
+| `wtype` | `wtype` | ✅ | ❌ | Wayland virtual-keyboard protocol. Compositor support varies (GNOME 46+ OK, KDE wayland OK, sway OK). |
+| `ydotool` | `ydotool` | ✅ | ✅ | Needs the `ydotoold` daemon running (`systemctl --user enable --now ydotool` after install). |
+| `xdotool` | `xdotool` | ❌ | ✅ | X11 only — works under XWayland too but cannot inject into native Wayland windows. |
+| `auto` | — | ✅ | ✅ | Picks the first available backend that the runtime probe confirms is wired up. |
 
 Select via `output.autopaste_command` in config, or let `auto` choose.
 
@@ -55,15 +91,21 @@ Select via `output.autopaste_command` in config, or let `auto` choose.
 
 | Target | What it does |
 |---|---|
-| `make build` | Build with `-tags whisper`; compiles whisper.cpp via CMake on first run |
-| `make install` | Build + copy to `~/.local/bin/a2text` + install `.desktop` entry |
-| `make install-desktop` | Install `.desktop` entry only |
-| `make uninstall` | Remove binary and `.desktop` entry |
-| `make test` | Run unit tests |
-| `make test-integration` | Run integration tests |
-| `make lint` | Run golangci-lint |
-| `make lint-fix` | Run golangci-lint with auto-fix |
-| `make gen` | Run `go generate ./...` (regenerate i18n keys) |
+| `make build` | Build binary (`-tags whisper`) + render hicolor icons (64/128/256) into `bin/icons/`. Compiles whisper.cpp via CMake on first run. |
+| `make build-icons` | Re-render `bin/icons/{64,128,256}.png` from the inactive-state SVG (via `cmd/genappicon`). Runs automatically as part of `build`. |
+| `make install` | Auto layout: non-root → `$HOME/.local`, root (sudo) → `/usr/local`. Honours `DESTDIR`. |
+| `make install-system` | Force system layout (`PREFIX=/usr/local`) regardless of caller UID. |
+| `make install-user` | Force per-user layout (`$HOME/.local`). Never uses `DESTDIR`, never needs sudo. |
+| `make install-desktop` / `install-desktop-user` | Just the `.desktop` entry + hicolor icons (auto vs forced per-user). |
+| `make uninstall` / `uninstall-system` / `uninstall-user` | Symmetric removal targets. |
+| `make clean` | Drop `bin/` (extends `go.mk`'s `clean`). |
+| `make clean-all` | `clean` + drop `whisper.cpp/build` (forces a ~10-minute CMake rebuild next time). |
+| `make test` | Run unit tests (`-race`, `-count=1`). |
+| `make test-integration` | Run integration tests (extra build tags). |
+| `make lint` / `lint-fix` | Run golangci-lint (optionally with auto-fix). |
+| `make gen` | Run `go generate ./...` (regenerate i18n keys). |
+
+`PREFIX` resolution order: explicit override (`make install PREFIX=/opt/a2text`) > caller UID (root → `/usr/local`, user → `$HOME/.local`) > packaging mode (`DESTDIR` set → `/usr/local`). The resolved prefix is printed at the top of every `install` run (`→ installing to PREFIX=...`) and baked into the `.desktop` `Exec=` line.
 
 ## STT backends
 
@@ -81,8 +123,6 @@ Select via `output.autopaste_command` in config, or let `auto` choose.
 ```bash
 a2text                          # toggle recording (or self-bootstrap as daemon)
 a2text --daemon                 # start as daemon only (for systemd units)
-a2text setup                    # register GNOME global shortcut
-a2text setup --undo             # remove the shortcut
 a2text --provider whisper-cpp   # override STT provider for this invocation
 a2text --lang en                # override language
 a2text --log-level debug        # override log level
@@ -167,8 +207,8 @@ output:
 
 hotkey:
   enabled: true
-  key: "F4"
-  modifiers: []
+  key: "R"
+  modifiers: ["super"]            # super | ctrl | alt | shift
   mode: "toggle"                  # toggle | hold
   backend: "auto"                 # auto | evdev | none
 
@@ -195,6 +235,7 @@ log_level: "info"                 # debug | info | warn | error
 
 ```
 cmd/a2text/          # Entry point
+cmd/genappicon/      # Build-time utility: renders hicolor app icon PNGs from the state SVG
 internal/
   domain/             # Sentinel errors, core types (zero deps)
   usecases/voice/     # Voice state machine, record/transcribe orchestration
@@ -205,13 +246,14 @@ internal/
   adapters/tray/      # System tray icon + state-driven menu
   adapters/ui/        # Shared Fyne theme
   i18n/               # TOML message catalogues (ru, en)
+  infra/autostart/    # XDG `.desktop` autostart entry (per-user enable/disable)
   infra/cli/          # CLI (urfave/cli v3)
   infra/config/       # Viper-backed YAML config with strict validation
-  infra/daemon/       # Daemon lifecycle, self-bootstrap, IPC socket
+  infra/daemon/       # Daemon lifecycle, self-bootstrap, IPC socket, model bootstrap
   infra/depcheck/     # Runtime dependency probes (pw-record, wl-copy, …)
   infra/factory/      # DI wiring (transcriber, capture, clipboard, autopaste)
   infra/setup/        # GNOME shortcut registration
-  infra/sysd/        # XDG paths, socket location, PID-file helpers
+  infra/sysd/         # XDG paths (config, data, runtime), socket location, PID-file helpers
 pkg/
   audio/              # ffmpeg-based audio conversion, probing, RMS
   audio/wav/          # WAV decoder (pcm_s16le, 16 kHz, mono)

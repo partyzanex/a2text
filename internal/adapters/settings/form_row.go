@@ -186,6 +186,26 @@ func formRowValidatedWithTrailingButton(
 	return container.NewBorder(nil, nil, lblBox, nil, field)
 }
 
+// checkboxRow builds a left-aligned row for boolean toggles: [checkbox]
+// [label] [help-icon]. Unlike formRowWithHelp, the label sits to the
+// RIGHT of the control and the whole row is packed to the left edge —
+// the natural reading order for "checkbox + what it does", matching
+// GTK/Adwaita switch rows.
+func checkboxRow(check *widget.Check, label, helpKey string) *fyne.Container {
+	lbl := widget.NewLabel(label)
+
+	children := []fyne.CanvasObject{check, lbl}
+
+	if helpKey != "" {
+		helpText := i18n.T(helpKey)
+		if helpText != "" && helpText != helpKey {
+			children = append(children, newHelpIcon(helpText))
+		}
+	}
+
+	return container.NewHBox(children...)
+}
+
 // leftAlign wraps obj in an HBox so its parent (typically a NewBorder
 // "centre" cell) cannot stretch it horizontally. Used for compact
 // widgets like widget.Check that look adrift when stretched to the

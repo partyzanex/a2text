@@ -677,7 +677,7 @@ func knownConfigKeys() map[string]bool {
 }
 
 func setVoiceDefaults(viperInst *viper.Viper) {
-	viperInst.SetDefault("provider", VoiceProviderGoWhisper)
+	viperInst.SetDefault("provider", VoiceProviderWhisperCpp)
 	viperInst.SetDefault("language", "ru")
 	viperInst.SetDefault("go_whisper.url", "http://localhost:9081/api/whisper")
 	viperInst.SetDefault("go_whisper.model", "ggml-small")

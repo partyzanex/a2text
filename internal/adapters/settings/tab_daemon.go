@@ -2,7 +2,7 @@ package settings
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -19,9 +19,16 @@ import (
 	"github.com/partyzanex/a2text/internal/infra/sysd"
 )
 
-// buildDaemonTab assembles the "Демон" tab: IPC, working-files,
-// logging and privacy. Technical infrastructure settings for the daemon.
+// buildDaemonTab assembles the "Процесс" tab: autostart, IPC,
+// working-files, logging and privacy. Technical infrastructure
+// settings for the daemon. The file is still named tab_daemon.go for
+// git-history continuity — the in-app label has changed but the
+// surface this builds has not.
 func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
+	autostartCard := rowsCard(i18n.T(i18n.KeyCardAutostart),
+		checkboxRow(ff.autostart, i18n.T(i18n.KeyLabelAutostartEnabled), "help.autostart_enabled"),
+	)
+
 	ipc := rowsCard(i18n.T(i18n.KeyCardIpc),
 		formRowWithHelp(i18n.T(i18n.KeyLabelSocketPath), "help.socket_path", ff.daemonSocketPath),
 		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelGracePeriod), "help.grace_period",
@@ -51,7 +58,7 @@ func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
 		formRowWithHelp(i18n.T(i18n.KeyLabelKeepAudioFormat), "help.keep_audio_format", ff.keepAudioFormat),
 	)
 
-	return tabBody(ipc, files, logging, privacy)
+	return tabBody(autostartCard, ipc, files, logging, privacy)
 }
 
 // buildOutputHotkeyDaemonFieldWidgets fills output, hotkey, daemon and privacy widgets into ff.
@@ -92,6 +99,7 @@ func (w *Window) buildOutputHotkeyDaemonFieldWidgets(ff *formFields) {
 	)
 	ff.logTranscript = widget.NewCheck("", nil)
 	ff.restoreClipboard = widget.NewCheck("", nil)
+	ff.autostart = widget.NewCheck("", nil)
 	w.buildPrivacyFieldWidgets(ff)
 }
 
@@ -138,21 +146,18 @@ func (w *Window) openTempDirPicker(ff *formFields) {
 		currentPath = os.ExpandEnv("$HOME")
 	}
 
-	selectedPath, err := tryZenity(currentPath)
-	if err == nil {
-		ff.tempDir.SetText(selectedPath)
+	selectedPath, err := pickFolder(currentPath)
+	if errors.Is(err, errDialogCancelled) {
+		return
+	}
+
+	if err != nil {
+		w.openFyneFolderDialogForTempDir(ff)
 
 		return
 	}
 
-	selectedPath, err = tryKdialog(currentPath)
-	if err == nil {
-		ff.tempDir.SetText(selectedPath)
-
-		return
-	}
-
-	w.openFyneFolderDialogForTempDir(ff)
+	ff.tempDir.SetText(selectedPath)
 }
 
 // openFyneFolderDialogForTempDir shows the Fyne folder picker for temp directory.
@@ -186,24 +191,46 @@ func (w *Window) openKeepAudioDirPicker(ff *formFields) {
 		currentPath = os.ExpandEnv("$HOME")
 	}
 
-	// Try system dialogs first (zenity for GNOME/GTK, kdialog for KDE).
-	// Fall back to Fyne dialog if neither is available.
-	selectedPath, err := tryZenity(currentPath)
-	if err == nil {
-		ff.keepAudioDir.SetText(selectedPath)
+	selectedPath, err := pickFolder(currentPath)
+	if errors.Is(err, errDialogCancelled) {
+		return
+	}
+
+	if err != nil {
+		w.openFyneFolderDialog(ff)
 
 		return
 	}
 
-	selectedPath, err = tryKdialog(currentPath)
-	if err == nil {
-		ff.keepAudioDir.SetText(selectedPath)
+	ff.keepAudioDir.SetText(selectedPath)
+}
 
-		return
+// pickFolder runs the first available native folder picker (zenity →
+// kdialog) and returns its selection. Cancellation (Escape/Cancel)
+// surfaces as errDialogCancelled so the caller stops — it must NOT
+// open a second dialog on top. Absence of every native backend
+// surfaces as errDialogUnavailable so the caller can fall back to the
+// Fyne picker.
+func pickFolder(currentPath string) (string, error) {
+	selected, err := tryZenity(currentPath)
+	if err == nil {
+		return selected, nil
 	}
 
-	// Fall back to Fyne dialog if system dialogs unavailable.
-	w.openFyneFolderDialog(ff)
+	if errors.Is(err, errDialogCancelled) {
+		return "", errDialogCancelled
+	}
+
+	selected, err = tryKdialog(currentPath)
+	if err == nil {
+		return selected, nil
+	}
+
+	if errors.Is(err, errDialogCancelled) {
+		return "", errDialogCancelled
+	}
+
+	return "", errDialogUnavailable
 }
 
 // applyOutputFields writes output form values back to the config.
@@ -239,7 +266,21 @@ func sanitizeDialogPath(currentPath string) string {
 	return trimmed
 }
 
+// errDialogUnavailable means the binary is not installed / not in PATH —
+// callers should fall through to the next backend (kdialog → Fyne).
+// errDialogCancelled means the binary ran but the user dismissed the
+// picker (Escape, Cancel, window close). Callers must treat this as a
+// terminal "no choice made" and NOT open a second dialog on top.
+var (
+	errDialogUnavailable = errors.New("settings: folder dialog backend unavailable")
+	errDialogCancelled   = errors.New("settings: folder dialog cancelled by user")
+)
+
 func tryZenity(currentPath string) (string, error) {
+	if _, err := exec.LookPath("zenity"); err != nil {
+		return "", errDialogUnavailable
+	}
+
 	path := sanitizeDialogPath(currentPath)
 
 	//nolint:gosec // path is sanitized via sanitizeDialogPath (rejects leading "-")
@@ -248,13 +289,30 @@ func tryZenity(currentPath string) (string, error) {
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("zenity failed: %w", err)
+		// Non-zero exit (Cancel/Escape) → user cancelled. Distinguish
+		// from "binary disappeared mid-call" via *exec.ExitError: the
+		// process ran to completion, just chose a non-zero status.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", errDialogCancelled
+		}
+
+		return "", errDialogUnavailable
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	selected := strings.TrimSpace(string(output))
+	if selected == "" {
+		return "", errDialogCancelled
+	}
+
+	return selected, nil
 }
 
 func tryKdialog(currentPath string) (string, error) {
+	if _, err := exec.LookPath("kdialog"); err != nil {
+		return "", errDialogUnavailable
+	}
+
 	path := sanitizeDialogPath(currentPath)
 
 	//nolint:gosec // path is sanitized via sanitizeDialogPath (rejects leading "-")
@@ -262,10 +320,20 @@ func tryKdialog(currentPath string) (string, error) {
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("kdialog failed: %w", err)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", errDialogCancelled
+		}
+
+		return "", errDialogUnavailable
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	selected := strings.TrimSpace(string(output))
+	if selected == "" {
+		return "", errDialogCancelled
+	}
+
+	return selected, nil
 }
 
 func (w *Window) openFyneFolderDialog(ff *formFields) {

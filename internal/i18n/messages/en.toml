@@ -8,7 +8,7 @@
 "tab.stt" = "STT"
 "tab.capture_hotkey" = "Capture & hotkey"
 "tab.output" = "Output"
-"tab.daemon" = "Daemon"
+"tab.process" = "Process"
 
 # --- Card titles ---
 "card.general" = "General"
@@ -24,6 +24,7 @@
 "card.files" = "Working files"
 "card.logging" = "Logging"
 "card.privacy" = "Privacy"
+"card.autostart" = "Autostart"
 
 # --- Form labels ---
 "label.stt_provider" = "STT provider"
@@ -64,6 +65,7 @@
 "label.keep_audio" = "Keep audio files"
 "label.keep_audio_dir" = "Audio directory"
 "label.keep_audio_format" = "Audio format"
+"label.autostart_enabled" = "Launch on login"
 
 # --- Validation messages ---
 "validation.url_required" = "URL is required"
@@ -154,6 +156,7 @@
 "help.keep_audio" = "Save a copy of every recording after a successful transcription. Useful for debugging and archival."
 "help.keep_audio_dir" = "Where to save kept recordings. Empty = the working temp_dir (legacy behaviour)."
 "help.keep_audio_format" = "Container for the saved file: WAV (lossless, big) or OGG/Vorbis (~6x smaller, perceptually identical for speech)."
+"help.autostart_enabled" = "Creates an XDG autostart .desktop entry under ~/.config/autostart/ so the daemon launches on next graphical login (GNOME, KDE and other DEs)."
 
 # --- Tray ---
 "tray.toggle" = "Toggle"

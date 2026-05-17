@@ -19,7 +19,6 @@ import (
 
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/infra/daemon"
-	"github.com/partyzanex/a2text/internal/infra/setup"
 )
 
 const configErrorExitCode = 2
@@ -43,12 +42,11 @@ const appName = "a2text"
 
 func NewCommand() *cli.Command {
 	return &cli.Command{
-		Name:     appName,
-		Usage:    "voice CLI: file transcription and microphone dictation (one-shot smoke modes)",
-		Version:  buildVersion(),
-		Flags:    rootFlags(),
-		Action:   action,
-		Commands: []*cli.Command{setupCommand()},
+		Name:    appName,
+		Usage:   "voice CLI: file transcription and microphone dictation (one-shot smoke modes)",
+		Version: buildVersion(),
+		Flags:   rootFlags(),
+		Action:  action,
 	}
 }
 
@@ -100,43 +98,6 @@ func rootFlags() []cli.Flag {
 			Usage: "enable pprof endpoint on host:port (e.g. 127.0.0.1:6060); " +
 				"empty = disabled. Loopback only unless you really mean to expose it.",
 			Sources: cli.EnvVars("A2TEXT_PPROF"),
-		},
-	}
-}
-
-// setupCommand returns the `a2text setup` subcommand. It registers (or
-// removes) the global keyboard shortcut in the current desktop environment.
-func setupCommand() *cli.Command {
-	return &cli.Command{
-		Name:  "setup",
-		Usage: "register a global keyboard shortcut for voice dictation",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "undo",
-				Usage: "remove the keyboard shortcut registered by `a2text setup`",
-			},
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			cfg, err := config.LoadVoice(cmd.Root().String(FlagConfig))
-			if err != nil {
-				return cli.Exit(fmt.Errorf("failed to load config: %w", err), configErrorExitCode)
-			}
-
-			logger := CreateLogger(cfg.LogLevel)
-
-			if cmd.Bool("undo") {
-				if err := setup.RunUnsetup(ctx, logger); err != nil {
-					return cli.Exit(fmt.Errorf("setup undo: %w", err), 1)
-				}
-
-				return nil
-			}
-
-			if err := setup.RunSetup(ctx, cfg, logger); err != nil {
-				return cli.Exit(fmt.Errorf("setup: %w", err), 1)
-			}
-
-			return nil
 		},
 	}
 }

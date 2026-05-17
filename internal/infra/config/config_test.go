@@ -27,7 +27,7 @@ func TestExampleConfig_ParsesAndValidates(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 
-	require.Equal(t, config.VoiceProviderGoWhisper, cfg.Provider)
+	require.Equal(t, config.VoiceProviderWhisperCpp, cfg.Provider)
 	require.Equal(t, "ru", cfg.Language)
 
 	// URL is the full base including the API path. Legacy configs with a

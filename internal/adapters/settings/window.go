@@ -3,8 +3,10 @@ package settings
 import (
 	"context"
 	"log/slog"
+	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -16,6 +18,7 @@ import (
 	"github.com/partyzanex/a2text/assets"
 	"github.com/partyzanex/a2text/internal/adapters/ui"
 	"github.com/partyzanex/a2text/internal/i18n"
+	"github.com/partyzanex/a2text/internal/infra/autostart"
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 
@@ -40,6 +43,15 @@ type Window struct {
 	win      fyne.Window
 	stopOnce sync.Once
 	saver    *autoSaver
+
+	// running tracks whether Run()'s Fyne event loop is currently live.
+	// Stop() needs this so it does not queue Quit onto a Fyne main
+	// thread that already tore down GLFW — calling SetShouldClose after
+	// glfw.Terminate panics with "GLFW library is not initialized",
+	// observed on Ctrl+C right after a normal Quit (last visible window
+	// closed → Fyne returned from Run → daemon shutdown goroutine still
+	// fires Stop).
+	running atomic.Bool
 
 	// downloader is the whisper.cpp model fetcher used by the
 	// "Скачать модель" button in the whisper.cpp card. Lazily-initialised
@@ -156,6 +168,9 @@ func (w *Window) Run() {
 	fyneApp.SetIcon(assets.AppIcon())
 	w.app = fyneApp
 
+	w.running.Store(true)
+	defer w.running.Store(false)
+
 	// A hidden stub window keeps the event loop alive between settings opens;
 	// without it app.Run() exits when the last visible window is closed.
 	// Must be created via fyne.Do so it runs after Run() establishes the
@@ -199,11 +214,33 @@ func (w *Window) Run() {
 
 // Stop quits the Fyne event loop, causing Run() to return.
 // Safe to call from any goroutine; idempotent.
+//
+// Two-layer guard against the "GLFW library is not initialized" panic
+// that Fyne 2.7.x throws when Quit lands on a torn-down GLFW:
+//
+//  1. `running` flag short-circuits the common case where Run() has
+//     fully returned (defer set it false) — no Fyne call is attempted.
+//  2. recover() catches the residual race: Quit can also fail mid-way
+//     through Fyne's own shutdown chain (Quit triggers window.Close,
+//     which queues SetShouldClose on the main thread; if GLFW already
+//     terminated in a parallel hook, the queued closure panics on the
+//     calling goroutine because fyne.Do dispatches inline when the
+//     main loop is no longer pumping). The panic is harmless — we
+//     wanted Fyne stopped and it is — so swallow it at DEBUG.
 func (w *Window) Stop() {
 	w.stopOnce.Do(func() {
-		if w.app != nil {
-			fyne.Do(w.app.Quit)
+		if w.app == nil || !w.running.Load() {
+			return
 		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				w.log.Debug("settings: Stop swallowed Fyne shutdown panic",
+					slog.Any("panic", r))
+			}
+		}()
+
+		fyne.Do(w.app.Quit)
 	})
 }
 
@@ -275,6 +312,47 @@ func (w *Window) runFyneOnce(fyneApp fyne.App) (crashed bool) {
 	fyneApp.Run() // blocks until Quit() is called or until a panic propagates
 
 	return false
+}
+
+// attachAutostartHandler wires the autostart checkbox to enable/disable
+// the XDG autostart entry directly, bypassing the YAML auto-save path:
+// the toggle's source of truth is the on-disk .desktop file, not a
+// config field. On failure we revert the checkbox so it never claims a
+// state the filesystem has not actually entered (a silent revert would
+// surprise the user — better to flip back and log loud).
+func (w *Window) attachAutostartHandler(ff *formFields) {
+	ff.autostart.OnChanged = func(enabled bool) {
+		if enabled {
+			execPath, err := os.Executable()
+			if err != nil {
+				w.log.Error("settings: autostart enable failed: resolve executable", slog.Any("err", err))
+				ff.autostart.SetChecked(false)
+
+				return
+			}
+
+			if err := autostart.Enable(execPath); err != nil {
+				w.log.Error("settings: autostart enable failed",
+					slog.String("exec", execPath), slog.Any("err", err))
+				ff.autostart.SetChecked(false)
+
+				return
+			}
+
+			w.log.Info("settings: autostart enabled", slog.String("exec", execPath))
+
+			return
+		}
+
+		if err := autostart.Disable(); err != nil {
+			w.log.Error("settings: autostart disable failed", slog.Any("err", err))
+			ff.autostart.SetChecked(true)
+
+			return
+		}
+
+		w.log.Info("settings: autostart disabled")
+	}
 }
 
 // rootCtx returns the stored root context or context.Background() as fallback.
@@ -361,6 +439,12 @@ type formFields struct {
 	keepAudioDir    *widget.Entry
 	keepAudioFormat *widget.Select
 
+	// autostart toggles the XDG autostart entry under ~/.config/autostart/.
+	// Lives outside the YAML config: its state IS the presence of the
+	// .desktop file. Wired with a custom OnChanged handler instead of
+	// the generic auto-save schedule.
+	autostart *widget.Check
+
 	// Provider-specific STT cards. Tracked here so changing the
 	// "Провайдер STT" select can show only the matching card and hide
 	// the irrelevant ones. Populated by buildSTTTab; nil before then.
@@ -378,13 +462,14 @@ func (w *Window) buildContent() fyne.CanvasObject {
 	// to disk. Replaces the explicit Save/Cancel buttons.
 	w.saver = newAutoSaver(autoSaveDelay, func() { w.save(ff) })
 	attachAutoSave(ff, w.saver.Schedule)
+	w.attachAutostartHandler(ff)
 
 	tabs := container.NewAppTabs(
 		container.NewTabItemWithIcon(i18n.T(i18n.KeyTabStt), assets.UIIcon("mic"), w.buildSTTTab(ff)),
 		container.NewTabItemWithIcon(
 			i18n.T(i18n.KeyTabCaptureHotkey), assets.UIIcon("record"), w.buildCaptureHotkeyTab(ff),
 		),
-		container.NewTabItemWithIcon(i18n.T(i18n.KeyTabDaemon), assets.UIIcon("server"), w.buildDaemonTab(ff)),
+		container.NewTabItemWithIcon(i18n.T(i18n.KeyTabProcess), assets.UIIcon("server"), w.buildDaemonTab(ff)),
 	)
 
 	// Resize the window to fit the active tab so each tab gets a
@@ -567,6 +652,15 @@ func (w *Window) setFieldValues(ff *formFields) {
 	ff.logTranscript.SetChecked(w.cfg.Privacy.LogTranscript)
 	ff.keepAudio.SetChecked(w.cfg.Privacy.KeepAudio)
 	ff.restoreClipboard.SetChecked(w.cfg.Output.RestoreClipboard)
+
+	// Initial autostart state mirrors the on-disk XDG entry, NOT a
+	// config field — the user may have removed the file outside the
+	// app (GNOME Tweaks, manual rm) and we must reflect that.
+	if enabled, err := autostart.IsEnabled(); err == nil {
+		ff.autostart.SetChecked(enabled)
+	} else {
+		w.log.Warn("settings: autostart state probe failed", slog.Any("err", err))
+	}
 
 	keepAudioFormat := w.cfg.Privacy.KeepAudioFormat
 	if keepAudioFormat == "" {

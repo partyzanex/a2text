@@ -1,5 +1,8 @@
-// Package setup implements the `a2text setup` subcommand, which registers
-// (or removes) a global keyboard shortcut in the current desktop environment.
+// Package setup registers (or removes) the a2text global keyboard
+// shortcut in the current desktop environment. RunSetup is invoked
+// automatically by the daemon on every start (idempotent — see
+// alreadyInstalled); RunUnsetup is called by the daemon when the user
+// clears hotkey.key in the settings UI.
 //
 // Currently only GNOME is supported. The shortcut is stored in dconf via
 // gsettings at the path:
@@ -121,6 +124,20 @@ func runSetup(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, rn
 
 	execPath = resolveLauncherPath(execPath)
 
+	// Idempotent fast-path: when the daemon auto-runs setup on every
+	// start (no more `a2text setup` subcommand), 99 % of launches find
+	// the binding already in place. Skip the gsettings writes in that
+	// case so the user does not see an INFO "hotkey registered" line on
+	// every restart and dconf does not record a no-op change. A probe
+	// failure is non-fatal — we fall through and let the writes recover.
+	if alreadyInstalled(ctx, rn, execPath, binding) {
+		log.DebugContext(ctx, "voice: hotkey already registered, skipping gsettings write",
+			slog.String("binding", binding),
+		)
+
+		return nil
+	}
+
 	if err := setGNOMEBinding(ctx, rn, execPath, binding); err != nil {
 		return err
 	}
@@ -135,6 +152,37 @@ func runSetup(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, rn
 	)
 
 	return nil
+}
+
+// alreadyInstalled reports whether the dconf state matches the requested
+// binding exactly (same name, command, accelerator, and presence in the
+// custom-keybindings list). Returns false on any read error so the caller
+// re-applies the binding — the user-facing cost of a redundant write is
+// near zero, while skipping a real fix would silently break the hotkey.
+func alreadyInstalled(ctx context.Context, rn runner, execPath, binding string) bool {
+	schema := gnomeDetailSchema + ":" + gnomeBindingPath
+
+	currentName, err := gsettingsGet(ctx, rn, schema, "name")
+	if err != nil || strings.Trim(currentName, "'") != bindingName {
+		return false
+	}
+
+	currentCmd, err := gsettingsGet(ctx, rn, schema, "command")
+	if err != nil || strings.Trim(currentCmd, "'") != execPath {
+		return false
+	}
+
+	currentBinding, err := gsettingsGet(ctx, rn, schema, "binding")
+	if err != nil || strings.Trim(currentBinding, "'") != binding {
+		return false
+	}
+
+	list, err := gsettingsGet(ctx, rn, gnomeListSchema, gnomeListKey)
+	if err != nil {
+		return false
+	}
+
+	return slices.Contains(parseGSettingsList(list), gnomeBindingPath)
 }
 
 func runUnsetup(ctx context.Context, log *slog.Logger, rn runner) error {

@@ -6,7 +6,7 @@
 "tab.stt" = "STT"
 "tab.capture_hotkey" = "Захват и хоткей"
 "tab.output" = "Вывод"
-"tab.daemon" = "Демон"
+"tab.process" = "Процесс"
 
 # --- Заголовки карточек ---
 "card.general" = "Общее"
@@ -22,6 +22,7 @@
 "card.files" = "Рабочие файлы"
 "card.logging" = "Логирование"
 "card.privacy" = "Приватность"
+"card.autostart" = "Автозапуск"
 
 # --- Метки полей ---
 "label.stt_provider" = "Провайдер STT"
@@ -62,6 +63,7 @@
 "label.keep_audio" = "Сохранять аудио"
 "label.keep_audio_dir" = "Папка для аудио"
 "label.keep_audio_format" = "Формат аудио"
+"label.autostart_enabled" = "Запускать при входе в систему"
 
 # --- Сообщения валидации ---
 "validation.url_required" = "URL обязателен"
@@ -152,6 +154,7 @@
 "help.keep_audio" = "Сохранять копию каждой записи после успешного распознавания. Полезно для отладки и архива."
 "help.keep_audio_dir" = "Куда складывать сохранённые записи. Пусто = в рабочую папку temp_dir (как раньше)."
 "help.keep_audio_format" = "Контейнер для сохранённого файла: WAV (без потерь, большой) или OGG/Vorbis (сжатие ~6×, для речи неотличимо)."
+"help.autostart_enabled" = "Создаёт XDG-файл автозапуска в ~/.config/autostart/. Демон будет стартовать при входе в систему (GNOME, KDE и другие DE)."
 
 # --- Трей ---
 "tray.toggle" = "Запись"

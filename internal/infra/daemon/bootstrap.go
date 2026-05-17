@@ -244,6 +244,12 @@ func runDaemon(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logger, s
 
 	CleanOrphanDirs(cfg.TempDir, log)
 
+	// First-launch ergonomic: on a fresh install (provider=whisper-cpp,
+	// no model file picked yet) drop ggml-small.bin into the XDG models
+	// dir before the transcriber factory probes for it. Idempotent —
+	// stat-only on every subsequent start.
+	EnsureWhisperCppModel(ctx, cfg, log)
+
 	transcriber := buildTranscriberOrLazyStub(ctx, cfg, log)
 
 	var ownedByDaemon bool

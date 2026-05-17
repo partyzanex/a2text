@@ -21,6 +21,7 @@ import (
 
 	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/pkg/gowhisper"
 	"github.com/partyzanex/a2text/pkg/stt"
 	"github.com/partyzanex/a2text/pkg/whispercpp"
@@ -130,7 +131,7 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 		whisperTimeout:      entryWithText(formatDuration(w.cfg.GoWhisper.Timeout), "30s"),
 		whisperAutoDownload: widget.NewCheck("", nil),
 		modelPath:           newWhisperCppModelPathEntry(w.cfg.ModelPath),
-		whisperCppModelsDir: entryWithText(w.cfg.WhisperCppModelsDir, ""),
+		whisperCppModelsDir: entryWithText(whisperCppModelsDirOrDefault(w.cfg.WhisperCppModelsDir), ""),
 		whisperCppModel:     widget.NewSelect(append([]string(nil), commonWhisperCppModels...), nil),
 		modelDownloadBtn:    widget.NewButton(i18n.T(i18n.KeyButtonDownloadModel), nil),
 		modelDownloadBar:    widget.NewProgressBar(),
@@ -752,17 +753,31 @@ var commonWhisperCppModels = []string{
 }
 
 // whisperCppModelsDir returns the conventional directory where users
-// keep whisper.cpp .bin models on this machine.
+// keep whisper.cpp .bin models on this machine. Thin wrapper around
+// sysd.WhisperCppModelsDir that swallows the (rare) $HOME resolution
+// error — settings UI callers want a string they can drop straight
+// into an Entry, not an error to bubble up.
 func whisperCppModelsDir() string {
-	if dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dir != "" {
-		return filepath.Join(dir, "a2text", "models")
+	dir, err := sysd.WhisperCppModelsDir()
+	if err != nil {
+		return ""
 	}
 
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "a2text", "models")
+	return dir
+}
+
+// whisperCppModelsDirOrDefault returns configured when non-blank,
+// otherwise the XDG-derived default from whisperCppModelsDir(). Used to
+// pre-fill the settings entry so the user does not have to type the
+// conventional path on a fresh install — leaving the field empty made
+// the download-model button silently fall back to the same default
+// anyway, but the path was invisible until the user clicked "browse".
+func whisperCppModelsDirOrDefault(configured string) string {
+	if dir := strings.TrimSpace(configured); dir != "" {
+		return dir
 	}
 
-	return ""
+	return whisperCppModelsDir()
 }
 
 // scanWhisperCppModels scans a directory for available Whisper.cpp models (.bin files).

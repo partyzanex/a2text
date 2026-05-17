@@ -38,11 +38,19 @@ const (
 	stateHexREnd    = 2
 	stateHexGEnd    = 4
 	stateLabel      = "a2"
-	stateFontSize   = 42.0 // gobold size that fills the 64px circle
 	stateFontDPI    = 72.0
-	stateBaselineY  = stateIconPx*72/100 + 1
 	stateCenterDiv  = 2
 	stateAppIconKey = "icons/a2t-state-inactive.svg"
+
+	// stateFontRatio is the font height as a fraction of the icon edge.
+	// At 64px master the gobold size was 42, which fills the disc without
+	// touching the rim — keep the same proportion at every resize so
+	// installed 128/256 icons stay visually identical to the in-app one.
+	stateFontRatio = 42.0 / 64.0
+	// stateBaselineRatio is the baseline Y as a fraction of the icon
+	// edge. At 64px master baseline was 47 (= 64*72/100 + 1) — the same
+	// 0.734 ratio is reused for every output size.
+	stateBaselineRatio = 47.0 / 64.0
 )
 
 // Fallback grey when an SVG has no <circle fill="..."> attribute.
@@ -52,22 +60,36 @@ const (
 	stateFallbackB uint8 = 128
 )
 
-// StateIconPNG rasterises a state SVG: takes only the <circle> fill
-// colour, then redraws a fresh PNG with the "a2" label centred on top
-// using the bundled gobold font. Returns a 64×64 NRGBA-encoded PNG.
-//
-// The full SVG markup (text, transforms, paths) is intentionally
-// ignored — we drive the rendering from Go because no pure-Go SVG
-// rasteriser in our dep tree supports <text>, and the icons are
-// always "letters on coloured disc" by design.
+// StateIconPNG rasterises a state SVG at the default 64×64 master size.
+// Equivalent to StateIconPNGSized(svgBytes, 64) — kept for callers that
+// do not care about the size (the tray, the in-app Fyne icon).
 func StateIconPNG(svgBytes []byte) []byte {
+	return StateIconPNGSized(svgBytes, stateIconPx)
+}
+
+// StateIconPNGSized rasterises a state SVG at the requested edge size in
+// pixels: takes only the <circle> fill colour, then redraws a fresh PNG
+// with the "a2" label centred on top using the bundled gobold font.
+// Returns a sizePx×sizePx NRGBA-encoded PNG.
+//
+// Used by cmd/genappicon to write 64/128/256 hicolor variants from a
+// single source SVG so HiDPI docks (GNOME at scale ≥1.5) get a crisp
+// icon instead of an upscaled blur. The full SVG markup (text,
+// transforms, paths) is intentionally ignored — we drive rendering
+// from Go because no pure-Go SVG rasteriser in our dep tree supports
+// <text>, and the icons are always "letters on coloured disc".
+func StateIconPNGSized(svgBytes []byte, sizePx int) []byte {
+	if sizePx <= 0 {
+		sizePx = stateIconPx
+	}
+
 	bg := parseHexColor(parseSVGCircleFill(svgBytes))
 
-	img := image.NewNRGBA(image.Rect(0, 0, stateIconPx, stateIconPx))
-	cx := float64(stateIconPx) * stateIconHalf
+	img := image.NewNRGBA(image.Rect(0, 0, sizePx, sizePx))
+	cx := float64(sizePx) * stateIconHalf
 
 	drawDisc(img, cx, cx, cx, bg)
-	drawLabel(img, stateLabel,
+	drawLabel(img, sizePx, stateLabel,
 		color.NRGBA{R: stateColorFull, G: stateColorFull, B: stateColorFull, A: stateColorFull})
 
 	return encodePNG(img)
@@ -123,54 +145,73 @@ func drawDisc(img *image.NRGBA, cx, cy, radius float64, col color.NRGBA) {
 	}
 }
 
-// iconFace caches the parsed gobold font face. opentype.Parse +
-// NewFace are not free, and the renderer is hit on every tray-state
-// transition and on every settings-window open; one shared face keeps
-// that path zero-alloc after the first call.
+// gobold is parsed once. opentype.Parse is not free; a single shared
+// parsed font lets us spin up a face per requested size on demand
+// without re-parsing the TTF every call.
 //
 //nolint:gochecknoglobals // immutable after init under sync.Once
 var (
-	iconFaceOnce sync.Once
-	iconFace     font.Face
+	gobboldOnce sync.Once
+	gobboldFont *opentype.Font
+
+	iconFaceMu    sync.Mutex
+	iconFaceCache = map[int]font.Face{}
 )
 
-func getIconFace() font.Face {
-	iconFaceOnce.Do(func() {
+func parsedGobold() *opentype.Font {
+	gobboldOnce.Do(func() {
 		parsed, err := opentype.Parse(gobold.TTF)
 		if err != nil {
 			panic(fmt.Sprintf("assets: parse gobold: %v", err))
 		}
 
-		face, err := opentype.NewFace(parsed, &opentype.FaceOptions{
-			Size:    stateFontSize,
-			DPI:     stateFontDPI,
-			Hinting: font.HintingFull,
-		})
-		if err != nil {
-			panic(fmt.Sprintf("assets: build font face: %v", err))
-		}
-
-		iconFace = face
+		gobboldFont = parsed
 	})
 
-	return iconFace
+	return gobboldFont
 }
 
-// drawLabel writes label centred horizontally on img using the cached
-// gobold face at stateBaselineY. Vertical placement is fixed (the
-// icons are always stateIconPx square); horizontal centring is
-// computed from font metrics so the label stays put across any future
-// relabelling.
-func drawLabel(img *image.NRGBA, label string, col color.NRGBA) {
-	face := getIconFace()
+// iconFaceFor returns a gobold face scaled for the requested icon edge
+// size. Faces are cached per size — the tray hits 64px on every state
+// transition, and the install path renders 64/128/256 once at startup,
+// so a tiny map keeps both hot.
+func iconFaceFor(sizePx int) font.Face {
+	iconFaceMu.Lock()
+	defer iconFaceMu.Unlock()
+
+	if cached, ok := iconFaceCache[sizePx]; ok {
+		return cached
+	}
+
+	face, err := opentype.NewFace(parsedGobold(), &opentype.FaceOptions{
+		Size:    float64(sizePx) * stateFontRatio,
+		DPI:     stateFontDPI,
+		Hinting: font.HintingFull,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("assets: build font face: %v", err))
+	}
+
+	iconFaceCache[sizePx] = face
+
+	return face
+}
+
+// drawLabel writes label centred horizontally on img at a baseline
+// proportional to the icon edge, so a 256px install icon looks like a
+// scaled-up version of the 64px in-app icon and not like a tiny glyph
+// floating on a giant disc.
+func drawLabel(img *image.NRGBA, sizePx int, label string, col color.NRGBA) {
+	face := iconFaceFor(sizePx)
 	advance := font.MeasureString(face, label)
-	startX := (fixed.I(stateIconPx) - advance) / stateCenterDiv
+	startX := (fixed.I(sizePx) - advance) / stateCenterDiv
+	baselineY := int(float64(sizePx)*stateBaselineRatio) + 1
 
 	drawer := &font.Drawer{
 		Dst:  img,
 		Src:  image.NewUniform(col),
 		Face: face,
-		Dot:  fixed.Point26_6{X: startX, Y: fixed.I(stateBaselineY)},
+		Dot:  fixed.Point26_6{X: startX, Y: fixed.I(baselineY)},
 	}
 	drawer.DrawString(label)
 }

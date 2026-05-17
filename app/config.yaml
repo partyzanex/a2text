@@ -1,4 +1,4 @@
-provider: "go-whisper"
+provider: "whisper-cpp"
 language: "ru"
 
 go_whisper:
@@ -10,7 +10,15 @@ go_whisper:
   timeout: "10m"
   auto_download: true
 
+# model_path is left blank on a fresh install. The daemon auto-downloads
+# ggml-tiny.bin (~75MB) into whisper_cpp_models_dir on first run when
+# provider is "whisper-cpp" and no model file is present, then writes
+# the resulting path back here. tiny is rough on Russian but ships fast;
+# override with an absolute .bin path to pin a heavier model
+# (ggml-small.bin / ggml-large-v3-turbo.bin) once it's been downloaded
+# via the settings UI.
 model_path: ""
+whisper_cpp_models_dir: ""
 
 openai:
   api_key: ""
