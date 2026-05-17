@@ -77,8 +77,18 @@ IS_XDG  := $(filter $(UNAME_S),Linux FreeBSD OpenBSD NetBSD DragonFly)
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/partyzanex/a2text/internal/infra/cli.Version=$(VERSION) \
+# -s strips the Go symbol table, -w drops DWARF. Go stack traces stay
+# readable via the runtime's pclntab (function names are preserved); pprof
+# still works. delve/gdb/nm/addr2line lose symbols — acceptable for a
+# release binary. Saves ~20–30% of binary size.
+LDFLAGS := -s -w \
+           -X github.com/partyzanex/a2text/internal/infra/cli.Version=$(VERSION) \
            -X github.com/partyzanex/a2text/internal/infra/cli.Commit=$(COMMIT)
+
+# -trimpath rewrites absolute source paths (/home/...) to module-relative
+# ones in the binary: reproducible builds + no host paths leaking into
+# panics/error strings.
+GO_BUILD_FLAGS := -trimpath -tags whisper -ldflags '$(LDFLAGS)'
 
 CGO_CFLAGS  := -I$(CURDIR)/$(WHISPER_DIR)/include -I$(CURDIR)/$(WHISPER_DIR)/ggml/include
 CGO_LDFLAGS := -L$(CURDIR)/$(WHISPER_DIR)/build/src -L$(CURDIR)/$(WHISPER_DIR)/build/ggml/src \
@@ -104,7 +114,7 @@ $(WHISPER_LIB):
 build: $(WHISPER_LIB) $(ICON_FILES)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
-	go build -tags whisper -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
+	go build $(GO_BUILD_FLAGS) -o $(BIN_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
 # Each $(ICON_BUILD)/<size>.png is a real file target: make compares the
 # mtime against $(ICON_DEPS) and skips regeneration when nothing
@@ -317,6 +327,16 @@ test: gen $(WHISPER_LIB)
 	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR)/build/ggml/src:$$LD_LIBRARY_PATH" \
 	go test -tags whisper -count=1 -race ./...
 
+# CI variant of test: skips `gen` (generated files are committed) so the
+# job does not waste time regenerating artefacts on every push. Still
+# depends on $(WHISPER_LIB) because the whisper-tagged code links against
+# the static archives.
+.PHONY: test-ci
+test-ci: $(WHISPER_LIB)
+	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
+	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR)/build/ggml/src:$$LD_LIBRARY_PATH" \
+	go test -tags integration,x11,linux,whisper -count=1 -race ./...
+
 .PHONY: test-integration
 test-integration: gen $(WHISPER_LIB)
 	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
@@ -330,6 +350,14 @@ lint: gen
 .PHONY: lint-fix
 lint-fix: gen
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run -c .golangci.yml --fix
+
+# CI variant of lint: skips `gen` (generated files are committed and CI
+# verifies they're up to date elsewhere) and uses the preinstalled
+# `golangci-lint` binary from PATH instead of `go run @latest`. Saves the
+# per-job ~30s of downloading and building golangci-lint from source.
+.PHONY: lint-ci
+lint-ci:
+	golangci-lint run -c .golangci.yml
 
 # --- go.mk bootstrap ---
 
