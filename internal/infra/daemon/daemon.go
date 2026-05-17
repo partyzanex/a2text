@@ -3,20 +3,16 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/partyzanex/shutdown"
 
-	"github.com/partyzanex/a2text/internal/adapters/ipc"
 	"github.com/partyzanex/a2text/internal/adapters/tray"
 	"github.com/partyzanex/a2text/internal/domain"
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/infra/factory"
-	"github.com/partyzanex/a2text/internal/infra/setup"
 	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
 )
@@ -35,18 +31,17 @@ const (
 	stateChBufSize = 16
 )
 
-// Daemon ties together state machine, IPC, sd_notify, voice use case, and
-// the recording/transcription/output adapters into the long-running
-// dictation service.
+// Daemon ties together state machine, sd_notify, voice use case, and the
+// recording/transcription/output adapters into the long-running dictation
+// service.
 //
 // One daemon per process. Mutual exclusion against parallel daemon starts
-// is enforced by the file-lock in StartDaemonLocked (see lock.go) — Daemon
-// itself assumes it has the field clear.
+// is enforced by the file-lock in sysd.AcquireDaemonLock — Daemon itself
+// assumes it has the field clear.
 //
-// Stage I.3 work: X11 hotkey (voice.HotkeyListener / adapters/hotkey.X11Hotkey)
-// is not yet wired here. The current entry point is CLI self-bootstrap
-// (RunBootstrap), which toggles via IPC. Hotkey wiring lands in stage I.3
-// when the daemon manages the full hotkey lifecycle directly.
+// Hotkey is driven entirely by an in-process evdev listener; there is no
+// IPC socket and no DE-shortcut path. The tray and settings window invoke
+// daemon methods directly.
 type Daemon struct {
 	cfg         *config.VoiceConfig
 	log         *slog.Logger
@@ -82,12 +77,6 @@ type Daemon struct {
 	// holdGate debounces hold-mode Press/Release pairs that are too short
 	// to be real recording attempts (accidental taps, key bounces).
 	holdGate holdGate
-
-	// serverMu protects the server pointer set by Serve and read by Shutdown.
-	// Without it we'd race when Shutdown is called from another goroutine
-	// during Serve startup.
-	serverMu sync.Mutex
-	server   *ipc.Server
 
 	// Cycle cancellation is split: cycleCancel kills the whole pipeline
 	// (used for "discard" and shutdown), recordingCancel kills only the
@@ -130,11 +119,6 @@ type fyneRunner interface {
 
 // DaemonDeps groups everything NewDaemon needs from the wiring layer.
 // Keeps the signature flat instead of a 7-arg constructor.
-//
-// The socket path is intentionally NOT here: Daemon.Serve takes it as an
-// argument so callers can pass DefaultSocketPath() (production) or a
-// per-test temp path (integration tests) without a separate construction
-// path.
 type DaemonDeps struct {
 	Cfg         *config.VoiceConfig
 	Log         *slog.Logger
@@ -423,28 +407,12 @@ func pickMaxRecord(cfg *config.VoiceConfig) time.Duration {
 
 const defaultMaxRecord = 60 * time.Second
 
-// Serve binds the IPC socket and runs the accept loop until ctx is done
-// or the listener is closed (typically by Shutdown). On a clean shutdown
-// the returned error is nil.
-//
-
-func (d *Daemon) Serve(ctx context.Context, socketPath string) error {
-	if socketPath == "" {
-		return errors.New("daemon: Serve: socket path must not be empty")
-	}
-
-	server, err := ipc.NewServer(ctx, socketPath, ipc.HandlerFunc(d.handleIPC), d.log)
-	if err != nil {
-		return fmt.Errorf("daemon: bind ipc: %w", err)
-	}
-
-	d.serverMu.Lock()
-	d.server = server
-	d.serverMu.Unlock()
-
+// Serve runs the daemon's foreground loop. The hotkey listener and tray run
+// in background goroutines; the Fyne settings event loop runs on the main
+// goroutine (GLFW requirement). Returns nil on a clean ctx-driven shutdown.
+func (d *Daemon) Serve(ctx context.Context) error {
 	d.notifier.Ready("idle")
 	d.log.Info("voice: daemon ready",
-		slog.String("socket", filepath.Base(server.SocketPath())),
 		slog.String("provider", d.cfg.Provider),
 	)
 
@@ -455,14 +423,6 @@ func (d *Daemon) Serve(ctx context.Context, socketPath string) error {
 	if d.tray != nil {
 		go d.tray.Run(ctx)
 	}
-
-	// IPC accept loop runs in a goroutine so the main goroutine is free for
-	// the Fyne event loop (GLFW requires app.Run on the main goroutine).
-	go func() {
-		if serveErr := server.Serve(ctx); serveErr != nil {
-			d.log.Warn("daemon: ipc serve error", slog.Any("err", serveErr))
-		}
-	}()
 
 	// shutdownDone is closed after Daemon.Shutdown completes, giving Serve a
 	// clean synchronisation point regardless of whether Fyne is in use.
@@ -546,25 +506,14 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		d.cycleMu.Unlock()
 
 		// LIFO manager: transcriber registered first (closed last),
-		// server registered second (closed first — stops new commands before
-		// the model/connection is released).
+		// hotkey listener registered second (closed first — no new edges
+		// can drive the daemon while the transcriber releases its model).
 		mgr := shutdown.NewLIFO()
 
 		if d.transcriber != nil {
 			mgr.Append(shutdown.Fn(d.transcriber.Close))
 		}
 
-		d.serverMu.Lock()
-		srv := d.server
-		d.serverMu.Unlock()
-
-		if srv != nil {
-			mgr.Append(shutdown.Fn(srv.Shutdown))
-		}
-
-		// Hotkey appended last so it Stops first under LIFO — no new toggles
-		// arrive while server.Shutdown drains in-flight IPC commands and the
-		// transcriber releases its model.
 		if d.hotkey != nil {
 			mgr.Append(shutdown.Fn(d.hotkey.Stop))
 		}
@@ -636,45 +585,13 @@ func (d *Daemon) applyHotkeyEvent(ctx context.Context, evt voice.HotkeyEvent, ev
 	d.dispatch(ctx, action)
 }
 
-// reloadHotkey re-registers the desktop hotkey binding from the current
-// cfg.Hotkey.* fields. Fixed gsettings path means re-running setup
-// overwrites the previous F-key with the new one in place.
-func (d *Daemon) reloadHotkey(ctx context.Context) {
-	if d == nil || d.cfg == nil {
-		return
-	}
-
-	switch decideHotkeyRegOp(d.cfg.Hotkey.Key, d.hotkey != nil, true) {
-	case hotkeyRegOpNoop:
-		return
-	case hotkeyRegOpUnsetup:
-		// Either the user cleared the key (effective "unbind") or a
-		// built-in listener is active (evdev) — in both cases drop the
-		// GNOME custom binding. RunUnsetup is a no-op on non-GNOME
-		// desktops and on missing bindings.
-		if err := setup.RunUnsetup(ctx, d.log); err != nil && !errors.Is(err, setup.ErrDesktopUnsupported) {
-			d.log.Warn("voice: hotkey unregister failed", slog.Any("err", err))
-		}
-	case hotkeyRegOpSetup:
-		if err := setup.RunSetup(ctx, d.cfg, d.log); err != nil {
-			if errors.Is(err, setup.ErrDesktopUnsupported) {
-				return
-			}
-
-			d.log.Warn("voice: hotkey re-register failed",
-				slog.String("key", d.cfg.Hotkey.Key),
-				slog.Any("err", err),
-			)
-
-			return
-		}
-
-		d.log.Info("voice: hotkey re-registered",
-			slog.String("key", d.cfg.Hotkey.Key),
-			slog.Any("modifiers", d.cfg.Hotkey.Modifiers),
-		)
-	}
-}
+// reloadHotkey was the GNOME-shortcut re-registration path. With the
+// IPC/DE-shortcut layers removed, the only hotkey mechanism is the
+// in-process evdev listener — changing the configured key requires a
+// daemon restart for now. The method is kept as a no-op so older callers
+// in ReloadConfig still compile; the body will be re-introduced when the
+// evdev listener supports live re-binding.
+func (d *Daemon) reloadHotkey(_ context.Context) {}
 
 // acceptToggle returns true when the Toggle should be processed.
 //
@@ -723,91 +640,6 @@ func (d *Daemon) runHotkey(ctx context.Context) {
 			slog.Any("err", err),
 		)
 	}
-}
-
-// handleIPC dispatches one IPC request → Response. Called from per-conn
-// goroutines inside ipc.Server; safe for concurrency thanks to the
-// machine's internal lock and cycleMu.
-//
-// Every Response carries Version and ID — the server layer also enforces
-// this (see server.go), but populating here keeps the contract local to
-// each handler return path so a future direct test of handleIPC sees the
-// correct shape.
-func (d *Daemon) handleIPC(ctx context.Context, req ipc.Request) ipc.Response {
-	state := d.machine.State()
-
-	if req.Command == ipc.CmdPing {
-		resp := ipc.NewResponseFor(req, string(state))
-		resp.OK = true
-		resp.LastError = d.machine.LastError()
-
-		return resp
-	}
-
-	event, evOk := commandToEvent(req.Command)
-	if !evOk {
-		resp := ipc.NewResponseFor(req, string(state))
-		resp.OK = false
-		resp.ErrorCode = ipc.ErrCodeUnknownCommand
-		resp.Message = fmt.Sprintf("daemon does not know command %q", req.Command)
-
-		return resp
-	}
-
-	if event == domain.EventToggle && !d.acceptToggle() {
-		resp := ipc.NewResponseFor(req, string(state))
-		resp.OK = false
-		resp.ErrorCode = ipc.ErrCodeBusy
-		resp.Message = "toggle debounced: too frequent"
-
-		return resp
-	}
-
-	newState, action, err := d.machine.Apply(event)
-	if err != nil {
-		// Only domain.ErrBusy maps to the "busy" error code. Any other rejection
-		// (unknown transition, post-shutdown, etc.) gets an empty code so
-		// the client doesn't treat all failures as transient backpressure.
-		code := ""
-		if errors.Is(err, domain.ErrBusy) {
-			code = ipc.ErrCodeBusy
-		}
-
-		resp := ipc.NewResponseFor(req, string(newState))
-		resp.OK = false
-		resp.ErrorCode = code
-		resp.Message = err.Error()
-
-		return resp
-	}
-
-	d.dispatch(ctx, action)
-
-	resp := ipc.NewResponseFor(req, string(newState))
-	resp.OK = true
-
-	return resp
-}
-
-// commandToEvent maps an IPC command to a state-machine event. Returns
-// ok=false for commands that have no event mapping (Ping, plus any future
-// command that lands here without a switch arm) so the caller can reject
-// rather than silently toggling — a default of domain.EventToggle was a footgun
-// for unknown commands.
-func commandToEvent(cmd ipc.Command) (domain.Event, bool) {
-	switch cmd {
-	case ipc.CmdToggle:
-		return domain.EventToggle, true
-	case ipc.CmdStart:
-		return domain.EventStart, true
-	case ipc.CmdStop:
-		return domain.EventStop, true
-	case ipc.CmdPing:
-		// Ping has no event mapping — handled before dispatch in handleIPC.
-		return "", false
-	}
-
-	return "", false
 }
 
 // dispatch performs the side effect that corresponds to a state-machine

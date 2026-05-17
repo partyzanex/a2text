@@ -4,16 +4,6 @@ package cmd
 // cmd.String/cmd.Bool read sites cannot drift.
 const (
 	FlagConfig = "config"
-	// FlagFile is a hidden dev flag: --file PATH transcribes a single audio
-	// file and prints the result to stdout. Used for smoke tests, CI
-	// integration tests, and interactive debugging. Not advertised in --help.
-	FlagFile = "file"
-
-	// FlagRecord is a hidden dev flag: --record DURATION captures audio
-	// from the default microphone for the given duration, transcribes it,
-	// and prints the result to stdout. Used for smoke tests of the capture
-	// adapter and end-to-end pipeline. Not advertised in --help.
-	FlagRecord = "record"
 
 	// FlagProvider overrides config.Provider for one invocation
 	// (useful when switching between go-whisper, whisper-cpp, openai, deepgram during dev).

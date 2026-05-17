@@ -16,7 +16,6 @@ import (
 
 	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/infra/sysd"
 )
 
 // buildDaemonTab assembles the "Процесс" tab: autostart, IPC,
@@ -29,8 +28,7 @@ func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
 		checkboxRow(ff.autostart, i18n.T(i18n.KeyLabelAutostartEnabled), "help.autostart_enabled"),
 	)
 
-	ipc := rowsCard(i18n.T(i18n.KeyCardIpc),
-		formRowWithHelp(i18n.T(i18n.KeyLabelSocketPath), "help.socket_path", ff.daemonSocketPath),
+	daemonLifecycle := rowsCard(i18n.T(i18n.KeyCardShutdown),
 		formRowValidatedWithHelp(i18n.T(i18n.KeyLabelGracePeriod), "help.grace_period",
 			ff.daemonGracePeriod, validateDuration),
 	)
@@ -58,7 +56,7 @@ func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
 		formRowWithHelp(i18n.T(i18n.KeyLabelKeepAudioFormat), "help.keep_audio_format", ff.keepAudioFormat),
 	)
 
-	return tabBody(autostartCard, ipc, files, logging, privacy)
+	return tabBody(autostartCard, daemonLifecycle, files, logging, privacy)
 }
 
 // buildOutputHotkeyDaemonFieldWidgets fills output, hotkey, daemon and privacy widgets into ff.
@@ -82,7 +80,6 @@ func (w *Window) buildOutputHotkeyDaemonFieldWidgets(ff *formFields) {
 		nil,
 	)
 	w.buildHotkeyFieldWidgets(ff)
-	ff.daemonSocketPath = entryWithText(w.cfg.Daemon.SocketPath, sysd.DefaultSocketPath())
 	ff.daemonGracePeriod = entryWithText(formatDuration(w.cfg.Daemon.ShutdownGracePeriod), "15s")
 	ff.tempDir = entryWithText(w.cfg.TempDir, "")
 	ff.tempDirButton = widget.NewButton("", nil)
@@ -242,7 +239,6 @@ func (w *Window) applyOutputFields(ff *formFields) {
 
 // applyDaemonFields writes daemon form values back to the config.
 func (w *Window) applyDaemonFields(ff *formFields) {
-	w.cfg.Daemon.SocketPath = ff.daemonSocketPath.Text
 	w.cfg.Daemon.ShutdownGracePeriod = parseDuration(ff.daemonGracePeriod.Text)
 	w.cfg.TempDir = ff.tempDir.Text
 	w.cfg.ConvertTimeout = parseDuration(ff.convertTimeout.Text)

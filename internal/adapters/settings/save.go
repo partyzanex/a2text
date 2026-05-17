@@ -186,7 +186,6 @@ func applyDaemonToMap(dst map[string]any, cfg *config.VoiceConfig) {
 		daemon = make(map[string]any)
 	}
 
-	daemon["socket_path"] = cfg.Daemon.SocketPath
 	daemon["shutdown_grace_period"] = cfg.Daemon.ShutdownGracePeriod.String()
 	dst["daemon"] = daemon
 }

@@ -129,12 +129,12 @@ func cardIconTable() map[string]fyne.Resource {
 		i18n.T(i18n.KeyCardCaptureAudio): theme.VolumeUpIcon(),
 		// Fyne does not ship a KeyboardIcon; ComputerIcon is the
 		// closest semantic match for a system-wide global hotkey.
-		i18n.T(i18n.KeyCardHotkey):  theme.ComputerIcon(),
-		i18n.T(i18n.KeyCardOutput):  theme.ContentPasteIcon(),
-		i18n.T(i18n.KeyCardIpc):     theme.ComputerIcon(),
-		i18n.T(i18n.KeyCardFiles):   theme.FolderIcon(),
-		i18n.T(i18n.KeyCardLogging): theme.DocumentIcon(),
-		i18n.T(i18n.KeyCardPrivacy): theme.VisibilityOffIcon(),
+		i18n.T(i18n.KeyCardHotkey):   theme.ComputerIcon(),
+		i18n.T(i18n.KeyCardOutput):   theme.ContentPasteIcon(),
+		i18n.T(i18n.KeyCardShutdown): theme.ComputerIcon(),
+		i18n.T(i18n.KeyCardFiles):    theme.FolderIcon(),
+		i18n.T(i18n.KeyCardLogging):  theme.DocumentIcon(),
+		i18n.T(i18n.KeyCardPrivacy):  theme.VisibilityOffIcon(),
 	}
 }
 

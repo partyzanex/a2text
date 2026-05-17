@@ -301,10 +301,6 @@ type VoiceSTTRetryConfig struct {
 
 // VoiceDaemonConfig groups daemon lifecycle settings.
 type VoiceDaemonConfig struct {
-	// SocketPath overrides the IPC socket path. Empty means auto-detect:
-	// $XDG_RUNTIME_DIR/a2text/a2text-voice.sock or os.TempDir()/a2text-voice.sock.
-	SocketPath string `mapstructure:"socket_path"`
-
 	// ShutdownGracePeriod is the maximum time the daemon waits for the
 	// current cycle to finish before force-stopping. Default 15s.
 	ShutdownGracePeriod time.Duration `mapstructure:"shutdown_grace_period"`
@@ -577,18 +573,31 @@ func readVoiceConfig(viperInst *viper.Viper, path string) error {
 	return nil
 }
 
+// deprecatedConfigKeys is the set of keys that were valid in earlier
+// versions and are now silently ignored. Listing them here prevents
+// existing user configs from failing strict validation after a key is
+// removed from the schema.
+//
+//nolint:gochecknoglobals // immutable lookup table
+var deprecatedConfigKeys = map[string]bool{
+	"daemon.socket_path": true, // removed with the IPC layer
+}
+
 // checkUnknownKeys returns an error if viper contains any key that is not
 // in the known set. This catches typos in YAML field names that would
-// otherwise be silently ignored.
+// otherwise be silently ignored. Deprecated keys are tolerated (silently
+// ignored) so users can upgrade without hand-editing their config.
 func checkUnknownKeys(v *viper.Viper) error {
 	known := knownConfigKeys()
 
 	var unknown []string
 
 	for _, key := range v.AllKeys() {
-		if !known[key] {
-			unknown = append(unknown, key)
+		if known[key] || deprecatedConfigKeys[key] {
+			continue
 		}
+
+		unknown = append(unknown, key)
 	}
 
 	if len(unknown) > 0 {
@@ -652,7 +661,6 @@ func knownConfigKeys() map[string]bool {
 		"restore_clipboard": true,
 		// daemon
 		"daemon":                       true,
-		"daemon.socket_path":           true,
 		"daemon.shutdown_grace_period": true,
 		// hotkey
 		"hotkey":           true,
@@ -706,7 +714,6 @@ func setVoiceDefaults(viperInst *viper.Viper) {
 	// "use the daemon default" — pickMaxRecord() in daemon.go handles it.
 
 	// Daemon defaults.
-	viperInst.SetDefault("daemon.socket_path", "")
 	viperInst.SetDefault("daemon.shutdown_grace_period", "15s")
 
 	// Nested output defaults are intentionally NOT set here — they would
@@ -865,58 +872,11 @@ func validateVoiceCapture(cfg *VoiceConfig) error {
 	}
 }
 
-// validateVoiceDaemon checks the daemon sub-section. Custom socket paths
-// are security-sensitive: a world-writable parent directory or a path in
-// shared /tmp allows other users to impersonate the daemon.
-func validateVoiceDaemon(cfg *VoiceConfig) error {
-	if cfg.Daemon.SocketPath == "" {
-		return nil
-	}
-
-	path := cfg.Daemon.SocketPath
-
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("daemon.socket_path must be absolute, got %q", path)
-	}
-
-	parent := filepath.Dir(path)
-
-	parentInfo, err := os.Stat(parent)
-	if err != nil {
-		return fmt.Errorf("daemon.socket_path parent %q: %w", parent, err)
-	}
-
-	if !parentInfo.IsDir() {
-		return fmt.Errorf("daemon.socket_path parent %q is not a directory", parent)
-	}
-
-	// Check parent ownership.
-	stat, ok := parentInfo.Sys().(*syscall.Stat_t)
-	if ok {
-		uidInt := os.Getuid()
-
-		if uidInt < 0 || uidInt > 4294967295 {
-			return fmt.Errorf("daemon.socket_path: uid %d out of valid range", uidInt)
-		}
-
-		uid := uint32(uidInt)
-		if stat.Uid != uid {
-			return fmt.Errorf(
-				"daemon.socket_path parent %q is owned by uid %d, expected %d",
-				parent, stat.Uid, uid,
-			)
-		}
-	}
-
-	// Parent must not be world/group writable.
-	perm := parentInfo.Mode().Perm()
-	if perm&0o022 != 0 {
-		return fmt.Errorf(
-			"daemon.socket_path parent %q has mode %04o (must not be group/world writable)",
-			parent, perm,
-		)
-	}
-
+// validateVoiceDaemon validates the daemon sub-section. Currently a no-op
+// — `daemon.socket_path` is gone with the IPC layer; only `shutdown_grace_period`
+// remains and is a plain duration the loader normalises. Kept as a hook so a
+// future field can plug in without re-introducing a missing-call seam.
+func validateVoiceDaemon(_ *VoiceConfig) error {
 	return nil
 }
 
@@ -1056,7 +1016,6 @@ func normalizeVoiceConfig(cfg *VoiceConfig) {
 	cfg.Capture.Backend = strings.ToLower(strings.TrimSpace(cfg.Capture.Backend))
 	cfg.Output.Mode = strings.ToLower(strings.TrimSpace(cfg.Output.Mode))
 	cfg.Output.AutopasteCommand = strings.ToLower(strings.TrimSpace(cfg.Output.AutopasteCommand))
-	cfg.Daemon.SocketPath = strings.TrimSpace(cfg.Daemon.SocketPath)
 	cfg.Privacy.KeepAudioDir = strings.TrimSpace(cfg.Privacy.KeepAudioDir)
 	cfg.Privacy.KeepAudioFormat = strings.ToLower(strings.TrimSpace(cfg.Privacy.KeepAudioFormat))
 

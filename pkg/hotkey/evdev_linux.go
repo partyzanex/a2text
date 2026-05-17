@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/bendahl/uinput"
 	"golang.org/x/sys/unix"
@@ -62,6 +63,30 @@ const (
 	// avoid cross-package coupling for a single string. If the clipboard
 	// package renames the device, this must follow.
 	virtualUinputDeviceName = "a2text-autopaste"
+
+	// keyMax is the highest KEY_* code we expect any device to expose. The
+	// EVIOCGBIT(EV_KEY) bitmap returned by the kernel is sized in bytes to
+	// cover the full range. Linux exposes KEY_MAX=0x2FF (well past every
+	// real key we care about — F-row, alphanumerics, modifiers).
+	keyMax = 0x2FF
+
+	// ioctlDirRead is the _IOR direction bit used to build EVIOCGBIT.
+	// _IOC layout on Linux/amd64: dir<<30 | size<<16 | type<<8 | nr.
+	ioctlDirRead = 2
+
+	// ioctlTypeEvdev is the 'E' magic byte that names the evdev ioctl
+	// family. Combined with the EV_KEY base offset (0x20) and the request
+	// nr offset, this gives the EVIOCGBIT(EV_KEY, …) ioctl number.
+	ioctlTypeEvdev = 'E'
+
+	// ioctlNrEviocgbitBase is the request number base for EVIOCGBIT.
+	// Adding the event type (e.g. EV_KEY) yields the actual nr.
+	ioctlNrEviocgbitBase = 0x20
+
+	// bitsPerByte names the obvious denominator used when packing
+	// per-keycode bits into the EVIOCGBIT bitmap. Named to satisfy the
+	// "no magic numbers" lint rule.
+	bitsPerByte = 8
 )
 
 // keycodeMap translates user-facing key names from config.yaml into Linux
@@ -232,7 +257,9 @@ func (e *EvdevHotkey) Listen(ctx context.Context) error {
 		return fmt.Errorf("hotkey: evdev: %w", err)
 	}
 
-	files, err := openInputDevices(e.log)
+	wanted := wantedKeyCodes(e.keyCode, e.modCodes)
+
+	files, err := openInputDevices(wanted, e.log)
 	if err != nil {
 		return err
 	}
@@ -324,6 +351,14 @@ func (e *EvdevHotkey) readDeviceLoop(ctx context.Context, file *os.File, wg *syn
 		value := int32(raw)
 
 		e.handleKey(ctx, code, value)
+
+		// Wipe the input_event packet right after dispatching. Reduces
+		// the window during which keycode/value pairs from foreign
+		// devices (passwords typed in a TTY, GPG passphrase, USB-HID
+		// OTP tokens) sit in our heap. A subsequent panic + core dump
+		// or /proc/<pid>/mem read by a same-UID process will see a
+		// zeroed buffer rather than recent keystrokes.
+		clear(buf)
 	}
 }
 
@@ -435,7 +470,32 @@ func (e *EvdevHotkey) modifiersSatisfiedLocked() bool {
 // keyboard, opens each remaining device for reading, and returns the open
 // files. Devices we cannot open (permission denied, transient unplug) are
 // logged at DEBUG and skipped — a partial enumeration is still useful.
-func openInputDevices(log *slog.Logger) ([]*os.File, error) {
+// wantedKeyCodes returns the set of keycodes that callers expect the daemon
+// to observe — the main hotkey plus every configured modifier. Devices
+// whose EV_KEY bitmap does not include at least one of these are not
+// keyboards we care about, so we never open them. Cuts our /dev/input
+// footprint from ~22 fd (one per input class node on a typical laptop:
+// power button, lid switch, accelerometer, fingerprint reader, every
+// USB-HID, …) down to the 1–2 keyboards that actually carry the chord.
+//
+// Security rationale: every additional fd we hold against /dev/input is a
+// surface that, given RCE in the daemon, becomes a passive keylogger for
+// whatever passes through that device — including USB-keyboard-emulating
+// hardware tokens (YubiKey OTPs), barcode scanners, on-screen keyboards.
+// Restricting fds to "only the device that physically has my hotkey on
+// it" sharply narrows the blast radius.
+func wantedKeyCodes(mainKey uint16, modCodes map[uint16]struct{}) map[uint16]struct{} {
+	out := make(map[uint16]struct{}, 1+len(modCodes))
+	out[mainKey] = struct{}{}
+
+	for code := range modCodes {
+		out[code] = struct{}{}
+	}
+
+	return out
+}
+
+func openInputDevices(wanted map[uint16]struct{}, log *slog.Logger) ([]*os.File, error) {
 	paths, err := filepath.Glob(devInputGlob)
 	if err != nil {
 		return nil, fmt.Errorf("hotkey: evdev: glob %q: %w", devInputGlob, err)
@@ -458,10 +518,89 @@ func openInputDevices(log *slog.Logger) ([]*os.File, error) {
 			continue
 		}
 
+		if !deviceSupportsAny(file, wanted, log) {
+			if closeErr := file.Close(); closeErr != nil {
+				log.Debug("hotkey: evdev: close skipped device failed",
+					slog.String("path", path),
+					slog.Any("err", closeErr),
+				)
+			}
+
+			continue
+		}
+
 		files = append(files, file)
 	}
 
 	return files, nil
+}
+
+// deviceSupportsAny reports whether the kernel reports any of wanted in
+// the device's EV_KEY bitmap. A device that exposes EV_KEY but does not
+// include our hotkey or modifiers (power buttons → KEY_POWER only, lid
+// switch → no EV_KEY, accelerometer → EV_ABS only, fingerprint reader →
+// usually nothing relevant) is skipped without ever entering the read
+// loop. Read errors fall open: we keep the device so a kernel ioctl
+// regression cannot accidentally silence the hotkey entirely.
+func deviceSupportsAny(file *os.File, wanted map[uint16]struct{}, log *slog.Logger) bool {
+	bitmap, err := readKeyBitmap(file)
+	if err != nil {
+		log.Debug("hotkey: evdev: EVIOCGBIT failed, keeping device (fail-open)",
+			slog.String("path", file.Name()),
+			slog.Any("err", err),
+		)
+
+		return true
+	}
+
+	for code := range wanted {
+		byteIdx := int(code) / bitsPerByte
+		bitIdx := int(code) % bitsPerByte
+
+		if byteIdx >= len(bitmap) {
+			continue
+		}
+
+		if bitmap[byteIdx]&(1<<bitIdx) != 0 {
+			return true
+		}
+	}
+
+	log.Debug("hotkey: evdev: skipping device — bitmap lacks every wanted keycode",
+		slog.String("path", file.Name()),
+	)
+
+	return false
+}
+
+// readKeyBitmap returns the EV_KEY capability bitmap for an opened input
+// device via the EVIOCGBIT(EV_KEY, KEY_MAX) ioctl. Each set bit at
+// position N reports that the device can emit keycode N. The bitmap is
+// returned as a byte slice the caller indexes with `code/8`, `code%8`.
+//
+//nolint:gosec // unsafe.Pointer required for ioctl(2) buffer argument; bitmap is heap-allocated, kept alive for the call
+func readKeyBitmap(file *os.File) ([]byte, error) {
+	const bitmapBytes = (keyMax / bitsPerByte) + 1
+
+	bitmap := make([]byte, bitmapBytes)
+
+	// _IOC(dir=R, size=bitmapBytes, type='E', nr=0x20+EV_KEY)
+	ioctlNum := uintptr(ioctlDirRead)<<30 |
+		uintptr(bitmapBytes)<<16 |
+		uintptr(ioctlTypeEvdev)<<8 |
+		uintptr(ioctlNrEviocgbitBase+unix.EV_KEY)
+
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		file.Fd(),
+		ioctlNum,
+		uintptr(unsafe.Pointer(&bitmap[0])),
+	)
+	if errno != 0 {
+		return nil, fmt.Errorf("hotkey: evdev: ioctl EVIOCGBIT(EV_KEY): %w", errno)
+	}
+
+	return bitmap, nil
 }
 
 // isVirtualDevice returns true when the event device belongs to our own

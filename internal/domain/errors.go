@@ -18,16 +18,11 @@ var (
 	// regular file (directory, socket, device, etc.).
 	ErrNotRegularFile = errors.New("voice: input is not a regular file")
 
-	// ErrBusy is returned by the daemon when an IPC request arrives while
-	// the state machine is in a state that cannot service it (e.g. toggle
-	// during transcription). The CLI surfaces this verbatim.
+	// ErrBusy is returned by the state machine when an event arrives in a
+	// state that cannot service it (e.g. toggle during transcription).
+	// Hotkey/tray dispatchers surface this as a no-op rather than a hard
+	// failure.
 	ErrBusy = errors.New("voice: daemon is busy")
-
-	// ErrDaemonNotRunning is returned by the IPC client when the socket is
-	// missing or refuses connections. Sentinel for the self-bootstrap path:
-	// command.go converts it into "this process becomes the daemon", so
-	// users never see it printed.
-	ErrDaemonNotRunning = errors.New("voice: daemon not running")
 
 	// ErrProviderUnavailable is returned when the chosen STT provider
 	// cannot service requests (network failure, model not loaded, etc.).

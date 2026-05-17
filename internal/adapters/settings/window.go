@@ -425,7 +425,6 @@ type formFields struct {
 	hotkeyBackend *widget.Select
 
 	// daemon
-	daemonSocketPath  *widget.Entry
 	daemonGracePeriod *widget.Entry
 	tempDir           *widget.Entry
 	tempDirButton     *widget.Button
@@ -557,7 +556,7 @@ func attachAutoSave(ff *formFields, schedule func()) {
 		ff.sttRetryInitDelay, ff.sttRetryMaxDelay, ff.sttRetryMaxAttempts,
 		ff.captureSampleRate, ff.captureChannels, ff.captureMaxDuration,
 		ff.captureSilenceThreshold,
-		ff.daemonSocketPath, ff.daemonGracePeriod, ff.tempDir,
+		ff.daemonGracePeriod, ff.tempDir,
 		ff.convertTimeout, ff.transcribeTimeout,
 	}
 	for _, entry := range entries {

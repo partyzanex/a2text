@@ -38,13 +38,11 @@ func (s *RuntimeDirSuite) TestDefaultRuntimeDir_XDGEmpty_FallsBackToTmpWithUID()
 		"fallback path must be an immediate child of os.TempDir, got %q (TempDir=%q)", got, os.TempDir())
 }
 
-func (s *RuntimeDirSuite) TestDefaultSocketAndLockPath_LiveInsideRuntimeDir() {
+func (s *RuntimeDirSuite) TestDefaultLockPath_LivesInsideRuntimeDir() {
 	xdg := s.T().TempDir()
 	s.T().Setenv("XDG_RUNTIME_DIR", xdg)
 
-	root := DefaultRuntimeDir()
-	s.Equal(root, filepath.Dir(DefaultSocketPath()))
-	s.Equal(root, filepath.Dir(DefaultLockPath()))
+	s.Equal(DefaultRuntimeDir(), filepath.Dir(DefaultLockPath()))
 }
 
 func (s *RuntimeDirSuite) TestEnsureRuntimeDir_HappyPath_CreatesPrivateDir() {

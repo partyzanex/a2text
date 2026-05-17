@@ -71,11 +71,6 @@ func EnsureRuntimeDir() error {
 	return nil
 }
 
-// DefaultSocketPath returns the unix socket path inside DefaultRuntimeDir.
-func DefaultSocketPath() string {
-	return filepath.Join(DefaultRuntimeDir(), "a2text-voice.sock")
-}
-
 // DefaultLockPath returns the PID lock path inside DefaultRuntimeDir.
 func DefaultLockPath() string {
 	return filepath.Join(DefaultRuntimeDir(), "a2text-voice.lock")

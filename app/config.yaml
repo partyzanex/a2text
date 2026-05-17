@@ -47,7 +47,6 @@ output:
   autopaste_command: "auto"
 
 daemon:
-  socket_path: ""
   shutdown_grace_period: "15s"
 
 hotkey:

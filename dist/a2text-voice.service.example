@@ -41,6 +41,14 @@ RestartSec=5
 # Give the daemon time to drain in-flight transcription before SIGKILL.
 TimeoutStopSec=20
 
+# Disable core dumps. The daemon holds open /dev/input/event* fds and
+# its heap transiently contains recently-read input_event packets
+# (keycode + value pairs from foreign devices: TTY passwords, GPG
+# passphrase prompts, USB-HID OTP tokens). A core dump captured after
+# a panic would expose those bytes to anyone who can read
+# /var/lib/systemd/coredump/. Forbid the dump outright.
+LimitCORE=0
+
 # --- Sandbox hardening ---
 #
 # The daemon needs read access to /dev/input/event* (hotkey backend),

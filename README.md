@@ -8,15 +8,36 @@ Target platform: **Linux + Wayland** (GNOME tested). X11 fallback is supported v
 
 a2text holds two privileged kernel handles for its lifetime: a write handle to `/dev/uinput` (autopaste keystroke synthesis) and a read handle to `/dev/input/event*` (hotkey capture). Be aware of the trust boundary:
 
-- **IPC socket** at `$XDG_RUNTIME_DIR/a2text/a2text-voice.sock` is `0o600` (cross-UID isolation enforced via `SO_PEERCRED`). **Any process running under your UID can connect and drive the daemon** — sending `start`, `stop`, `toggle`. There is no shared-secret check today: a malicious same-UID process (sandbox escape, malware from `~/Downloads`, untrusted Electron app with broad filesystem access) can:
-  - start recording silently and read `/tmp/a2text-voice-*.wav` before the daemon cleans it up;
-  - race-overwrite the clipboard between Deliver and Paste to inject arbitrary keystrokes into the currently focused window (mitigated by a pre-Paste race-guard that aborts if the clipboard content diverges).
+### Why the daemon needs the `input` group
+
+The evdev hotkey backend reads raw `input_event` packets from `/dev/input/event*`. Those nodes are `root:input 0o640` on every mainstream distro, so the daemon's UID must be in the `input` group:
+
+```bash
+sudo usermod -aG input "$USER"  # log out + log back in for the group to take effect
+```
+
+The kernel input subsystem delivers **every** keypress on every opened device — there is no per-window or per-focus filtering at that layer. To narrow the surface, the daemon now calls `EVIOCGBIT(EV_KEY)` on each device and **keeps only those whose kernel-reported keycap bitmap contains the configured hotkey or one of its modifiers**. Power buttons, lid switches, accelerometers, tablet pens, fingerprint readers, on-screen keyboards, and similar non-keyboards are skipped before any read; on a typical laptop this cuts the daemon's `/dev/input` fd count from ~22 down to 1–2 physical keyboards. The buffer holding each `input_event` is also zeroed immediately after dispatch so a panic + core dump cannot leak recent keystrokes; the example systemd unit additionally sets `LimitCORE=0` to disable core dumps altogether.
+
+If you cannot grant `input` group membership, switch to the GNOME DE-shortcut hotkey backend (`hotkey.backend: auto` falls through to it when evdev is unavailable). The DE-shortcut path is Press-only — hold mode degrades to toggle — but it does not require `/dev/input` access.
+
+### Same-UID trust caveat
+
+**Any process running under your UID is trusted.** The IPC socket and `SO_PEERCRED` UID-match block cross-UID callers (sandbox escapes, other users on a shared host) but do not isolate same-UID processes from each other. A same-UID adversary can:
+
+- send `start`/`stop`/`toggle` over the IPC socket and read recordings from `$TMPDIR`;
+- read the daemon's heap via `/proc/<pid>/mem` (or `ptrace`) and recover any keystroke the evdev reader passed through before the buffer was zeroed;
+- race the autopaste pipeline — though the pre-Paste clipboard race-guard refuses to inject Ctrl+V when the clipboard no longer matches the transcript.
+
+If you run untrusted same-UID code (Electron apps with broad filesystem access, random binaries from `~/Downloads`, sandbox escapes), prefer `output.mode: clipboard` (no autopaste) and the GNOME DE-shortcut backend (no `/dev/input` access).
+
+### Trust-boundary checklist
+
+- **IPC socket** at `$XDG_RUNTIME_DIR/a2text/a2text-voice.sock` is `0o600` and the daemon rejects cross-UID callers via `SO_PEERCRED`. Same-UID callers (CLI invocations, your shell, *also* any same-UID malware) all get through. Recording byproducts in `$TMPDIR/a2text-voice-*.wav` are readable until the cycle ends.
+- **Autopaste** synthesises Ctrl+V via `/dev/uinput` after every transcription cycle. The pre-Paste clipboard race-guard refuses to fire when the clipboard contents have changed since Deliver, blocking the most direct same-UID keystroke-injection path. Set `output.mode: clipboard` to disable autopaste entirely if you cannot accept the residual risk.
 - **Cloud STT providers** (OpenAI, Deepgram) receive raw audio. Cloud routing is **off by default** — the default config points at local `go-whisper` or `whisper-cpp`. Switching to a cloud provider in the settings UI uploads audio to that vendor; review their data-retention policy before enabling.
 - **whisper.cpp models** are downloaded from HuggingFace mirrors. The downloader does not yet verify SHA-256 against a pinned manifest. Audit the model file before pointing the daemon at it on hostile networks.
 - **API keys** in `~/.config/a2text/config.yaml` are stored as plaintext YAML. Use a per-user encrypted home or the `A2TEXT_*_API_KEY` env vars (which the daemon reads from systemd `EnvironmentFile=` if you do not want them on disk). A libsecret/keyring backend is on the roadmap.
 - **Audit trail** lives at `$XDG_DATA_HOME/a2text/audit.log` (default `~/.local/share/a2text/audit.log`). Append-only, `0o600`. Records IPC accepts (peer PID/UID) and autopaste fires. Rotate manually; the daemon does not.
-
-If you operate a2text on a shared machine, or in a context where you cannot trust every same-UID process, **disable autopaste** (`output.mode: clipboard`) and **prefer evdev hotkey backend** (lowest surface).
 
 ## Features
 

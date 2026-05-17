@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/partyzanex/a2text/internal/adapters/ipc"
 	"github.com/partyzanex/a2text/internal/domain"
 	"github.com/partyzanex/a2text/internal/infra/config"
 	"github.com/partyzanex/a2text/internal/usecases/voice"
@@ -201,27 +200,6 @@ func (s *ToggleDebounceSuite) TestHotkeyHandler_ToggleMode_RapidRestart_FromIdle
 
 	s.Equal(before, dm.machine.State(),
 		"key-repeat restart from Idle within debounce window must be blocked")
-}
-
-// --- handleIPC (IPC path) ---
-
-// TestHandleIPC_Toggle_Debounced_ReturnsBusy checks that handleIPC returns
-// ErrCodeBusy — not ErrCodeUnknownCommand or OK — when a Toggle IPC command
-// arrives within the debounce window.
-func (s *ToggleDebounceSuite) TestHandleIPC_Toggle_Debounced_ReturnsBusy() {
-	dm := s.newSilentDaemon()
-	dm.acceptToggle()
-
-	req := ipc.Request{
-		Version: ipc.ProtocolVersion,
-		ID:      "debounce-test",
-		Command: ipc.CmdToggle,
-	}
-
-	resp := dm.handleIPC(s.T().Context(), req)
-
-	s.False(resp.OK, "debounced IPC Toggle must not succeed")
-	s.Equal(ipc.ErrCodeBusy, resp.ErrorCode, "debounced IPC Toggle must return ErrCodeBusy")
 }
 
 // --- advanceCycleSuccess: transcript log includes model ---

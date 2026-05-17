@@ -5,6 +5,7 @@ package hotkey
 import (
 	"context"
 	"encoding/binary"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // makePipe returns a read/write pair of *os.File for feeding synthetic
 // input_event packets to readDeviceLoop. The test must close the writer
@@ -339,6 +342,49 @@ func TestReadDeviceLoop_IgnoresNonKeyEvents(t *testing.T) {
 	wg.Wait()
 
 	assert.EqualValues(t, 0, count.Load())
+}
+
+func TestWantedKeyCodes_IncludesMainAndModifiers(t *testing.T) {
+	t.Parallel()
+
+	main := uint16(uinput.KeyF4)
+	mods := map[uint16]struct{}{
+		uint16(uinput.KeyLeftctrl):  {},
+		uint16(uinput.KeyRightctrl): {},
+	}
+
+	got := wantedKeyCodes(main, mods)
+
+	require.Len(t, got, 3, "wanted set must hold main + every modifier code")
+	assert.Contains(t, got, main)
+	assert.Contains(t, got, uint16(uinput.KeyLeftctrl))
+	assert.Contains(t, got, uint16(uinput.KeyRightctrl))
+}
+
+func TestWantedKeyCodes_NoModifiers(t *testing.T) {
+	t.Parallel()
+
+	got := wantedKeyCodes(uint16(uinput.KeyF4), nil)
+
+	require.Len(t, got, 1)
+	assert.Contains(t, got, uint16(uinput.KeyF4))
+}
+
+func TestDeviceSupportsAny_PipeFailsOpen(t *testing.T) {
+	t.Parallel()
+
+	// EVIOCGBIT against a non-evdev fd fails with ENOTTY. The filter
+	// MUST fail open in that case so a kernel/ioctl regression cannot
+	// silently silence the hotkey by skipping every device.
+	r, _, err := makePipe(t)
+	require.NoError(t, err)
+
+	wanted := map[uint16]struct{}{uint16(uinput.KeyF4): {}}
+
+	assert.True(t,
+		deviceSupportsAny(r, wanted, discardLogger()),
+		"non-evdev fd (pipe) must keep the device — fail-open under ioctl errors",
+	)
 }
 
 func TestEvdevHotkey_Stop_Idempotent(t *testing.T) {
