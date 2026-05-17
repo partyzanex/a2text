@@ -83,15 +83,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
+      # Install golangci-lint via the upstream install script. The
+      # golangci-lint-action insists on running `golangci-lint run` itself,
+      # which prevents us from delegating to `make lint-ci`. Bare install
+      # leaves the binary on PATH for the Makefile target to invoke.
       - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          install-mode: binary
-          # The action would run golangci-lint itself; we delegate to the
-          # Makefile target so contributors and CI invoke the exact same
-          # command (`make lint-ci`).
-          args: --version
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run lint
         run: make lint-ci
