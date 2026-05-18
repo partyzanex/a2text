@@ -169,14 +169,44 @@ func (h *helpIcon) showPopup() {
 
 	h.popup = widget.NewPopUp(content, canv)
 
-	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(h)
-	pos.Y += h.Size().Height
+	popupHeight := wrappedHeight + pad*padScale
+	pos := h.placePopup(canv, popupHeight)
 
 	h.popup.ShowAtPosition(pos)
 	// Resize after Show so Fyne lays out the stack at the explicit
 	// dimensions — the rectangle fills the full popup area and the
 	// label sits centred with its wrapped content visible.
-	h.popup.Resize(fyne.NewSize(helpPopupWidth, wrappedHeight+pad*padScale))
+	h.popup.Resize(fyne.NewSize(helpPopupWidth, popupHeight))
+}
+
+// placePopup returns a canvas-relative position that keeps the tooltip
+// fully inside the visible canvas. Prefers placing the popup below the
+// icon; flips above when there is no room. Horizontally clips into the
+// canvas if the icon sits too close to the right edge.
+func (h *helpIcon) placePopup(canv fyne.Canvas, popupHeight float32) fyne.Position {
+	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(h)
+	canvSize := canv.Size()
+	iconHeight := h.Size().Height
+
+	below := pos.Y + iconHeight
+	if below+popupHeight <= canvSize.Height {
+		pos.Y = below
+	} else {
+		pos.Y -= popupHeight
+		if pos.Y < 0 {
+			pos.Y = 0
+		}
+	}
+
+	if pos.X+helpPopupWidth > canvSize.Width {
+		pos.X = canvSize.Width - helpPopupWidth
+	}
+
+	if pos.X < 0 {
+		pos.X = 0
+	}
+
+	return pos
 }
 
 type helpIconRenderer struct {

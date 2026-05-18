@@ -16,29 +16,34 @@ import (
 
 const maxStderrTruncLen = 200
 
-type execCopyRunner struct{}
+type execCopyRunner struct {
+	// allowed is the only binary basename this runner is permitted to
+	// execute. Used to prevent command injection — Wayland callers seed
+	// it with "wl-copy", X11 callers with "xclip".
+	allowed string
+}
 
 func (execCopyRunner) LookPath(name string) (string, error) {
 	p, err := exec.LookPath(name)
 	if err != nil {
-		return "", fmt.Errorf("wayland: %w", err)
+		return "", fmt.Errorf("clipboard: %w", err)
 	}
 
 	return p, nil
 }
 
-func (execCopyRunner) Run(
+func (r execCopyRunner) Run(
 	ctx context.Context, name string, args []string, stdin []byte, timeout time.Duration,
 ) error {
-	// Validate that the binary is the expected wl-copy binary to prevent command injection.
-	if filepath.Base(name) != wlCopyBin {
-		return fmt.Errorf("wayland: command not allowed: %s", filepath.Base(name))
+	// Validate that the binary matches the allowlisted name to prevent command injection.
+	if filepath.Base(name) != r.allowed {
+		return fmt.Errorf("clipboard: command not allowed: %s", filepath.Base(name))
 	}
 
 	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(deadlineCtx, wlCopyBin)
+	cmd := exec.CommandContext(deadlineCtx, name)
 	cmd.Args = append(cmd.Args, args...)
 	// WaitDelay caps how long cmd.Wait blocks for I/O goroutines after the
 	// process exits.  wl-copy often forks a daemon child that inherits the
@@ -116,7 +121,7 @@ const (
 //
 // Errors: fail-hard on missing wl-copy binary (ErrNoBackend).
 func NewWaylandClipboard(log *slog.Logger) (*WaylandClipboard, error) {
-	return newWaylandClipboard(execCopyRunner{}, log)
+	return newWaylandClipboard(execCopyRunner{allowed: wlCopyBin}, log)
 }
 
 func newWaylandClipboard(runner CopyRunner, log *slog.Logger) (*WaylandClipboard, error) {

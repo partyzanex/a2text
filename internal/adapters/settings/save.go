@@ -149,9 +149,12 @@ func applyHotkeyToMap(dst map[string]any, cfg *config.VoiceConfig) {
 	hotkey["key"] = cfg.Hotkey.Key
 	hotkey["mode"] = string(cfg.Hotkey.Mode)
 	hotkey["modifiers"] = splitTrimmed(strings.Join(cfg.Hotkey.Modifiers, ","))
-	hotkey["backend"] = string(cfg.Hotkey.Backend)
-	hotkey["enabled"] = cfg.Hotkey.Enabled
 	dst["hotkey"] = hotkey
+
+	// Strip legacy fields that older configs may have persisted so we don't
+	// resurrect them on rewrite.
+	delete(hotkey, "backend")
+	delete(hotkey, "enabled")
 }
 
 func applyOutputToMap(dst map[string]any, cfg *config.VoiceConfig) {

@@ -91,6 +91,12 @@ func RunDaemonOnly(ctx context.Context, cfg *config.VoiceConfig, log *slog.Logge
 
 	_ = stdout // reserved for future operator-visible output
 
+	// Initialise i18n before any UI surface (tray, settings) reads strings.
+	// A bad language code is non-fatal: i18n falls back to the default locale.
+	if err := i18n.Init(cfg.UILanguage); err != nil {
+		log.Warn("daemon-only: i18n init failed; using fallbacks", slog.Any("err", err))
+	}
+
 	if err := sysd.EnsureRuntimeDir(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}

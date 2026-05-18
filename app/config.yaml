@@ -50,10 +50,8 @@ daemon:
   shutdown_grace_period: "15s"
 
 hotkey:
-  enabled: true
   key: "R"
   modifiers: ["super"]
-  backend: "auto"
   mode: "toggle"
 
 privacy:

@@ -27,7 +27,7 @@ type X11Clipboard struct {
 //
 // Errors: fail-hard on missing xclip binary (ErrNoBackend).
 func NewX11Clipboard(log *slog.Logger) (*X11Clipboard, error) {
-	return newX11Clipboard(execCopyRunner{}, log)
+	return newX11Clipboard(execCopyRunner{allowed: xclipBin}, log)
 }
 
 func newX11Clipboard(runner CopyRunner, log *slog.Logger) (*X11Clipboard, error) {

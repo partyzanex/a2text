@@ -419,10 +419,8 @@ type formFields struct {
 	restoreClipboard *widget.Check
 
 	// hotkey
-	hotkeyEnabled *widget.Check
 	hotkeyBinding *hotkeyCaptureButton
 	hotkeyMode    *widget.Select
-	hotkeyBackend *widget.Select
 
 	// daemon
 	daemonGracePeriod *widget.Entry
@@ -573,7 +571,7 @@ func attachAutoSave(ff *formFields, schedule func()) {
 	selects := []*widget.Select{
 		ff.provider, ff.language, ff.uiLanguage,
 		ff.captureBackend, ff.outputMode, ff.autopaste,
-		ff.hotkeyMode, ff.hotkeyBackend, ff.logLevel,
+		ff.hotkeyMode, ff.logLevel,
 		ff.keepAudioFormat,
 	}
 	for _, sel := range selects {
@@ -581,7 +579,6 @@ func attachAutoSave(ff *formFields, schedule func()) {
 	}
 
 	checks := []*widget.Check{
-		ff.hotkeyEnabled,
 		ff.whisperAutoDownload, ff.sttRetryEnabled,
 		ff.deepgramStreaming,
 		ff.logTranscript, ff.keepAudio,
@@ -620,11 +617,6 @@ func (w *Window) setFieldValues(ff *formFields) {
 		captureBackend = config.VoiceCaptureBackendAuto
 	}
 
-	hotkeyBackend := string(w.cfg.Hotkey.Backend)
-	if hotkeyBackend == "" {
-		hotkeyBackend = string(config.VoiceHotkeyBackendAuto)
-	}
-
 	logLevel := w.cfg.LogLevel
 	if logLevel == "" {
 		logLevel = config.VoiceLogLevelInfo
@@ -642,12 +634,10 @@ func (w *Window) setFieldValues(ff *formFields) {
 	ff.outputMode.SetSelected(w.cfg.Output.Mode)
 	ff.autopaste.SetSelected(autopaste)
 	ff.hotkeyMode.SetSelected(hotkeyMode)
-	ff.hotkeyBackend.SetSelected(hotkeyBackend)
 	ff.logLevel.SetSelected(logLevel)
 	ff.whisperAutoDownload.SetChecked(w.cfg.GoWhisper.AutoDownload)
 	ff.sttRetryEnabled.SetChecked(w.cfg.STTRetry.Enabled)
 	ff.deepgramStreaming.SetChecked(w.cfg.Deepgram.Streaming)
-	ff.hotkeyEnabled.SetChecked(w.cfg.Hotkey.Enabled)
 	ff.logTranscript.SetChecked(w.cfg.Privacy.LogTranscript)
 	ff.keepAudio.SetChecked(w.cfg.Privacy.KeepAudio)
 	ff.restoreClipboard.SetChecked(w.cfg.Output.RestoreClipboard)

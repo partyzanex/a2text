@@ -335,13 +335,13 @@ test: gen $(WHISPER_LIB)
 test-ci: $(WHISPER_LIB)
 	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
 	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR)/build/ggml/src:$$LD_LIBRARY_PATH" \
-	go test -tags integration,x11,linux,whisper -count=1 -race ./...
+	go test -tags integration,linux,whisper -count=1 -race ./...
 
 .PHONY: test-integration
 test-integration: gen $(WHISPER_LIB)
 	CGO_ENABLED=1 CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS='$(CGO_LDFLAGS)' \
 	LD_LIBRARY_PATH="$(CURDIR)/$(WHISPER_DIR)/build/src:$(CURDIR)/$(WHISPER_DIR)/build/ggml/src:$$LD_LIBRARY_PATH" \
-	go test -tags integration,x11,linux,whisper -count=1 -race ./...
+	go test -tags integration,linux,whisper -count=1 -race ./...
 
 .PHONY: lint
 lint: gen

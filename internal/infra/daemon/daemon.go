@@ -601,13 +601,47 @@ func (d *Daemon) applyHotkeyEvent(ctx context.Context, evt voice.HotkeyEvent, ev
 	d.dispatch(ctx, action)
 }
 
-// reloadHotkey was the GNOME-shortcut re-registration path. With the
-// IPC/DE-shortcut layers removed, the only hotkey mechanism is the
-// in-process evdev listener — changing the configured key requires a
-// daemon restart for now. The method is kept as a no-op so older callers
-// in ReloadConfig still compile; the body will be re-introduced when the
-// evdev listener supports live re-binding.
-func (d *Daemon) reloadHotkey(_ context.Context) {}
+// reloadHotkey rebuilds the evdev listener from the current config and
+// swaps it in atomically. Stops the old listener (which causes its Listen
+// call to return and the supervising goroutine to exit) before starting
+// the new one. On build failure the old binding stays active.
+//
+// Serialised against ReloadTranscriber / ReloadOutput via reloadMu.
+func (d *Daemon) reloadHotkey(ctx context.Context) {
+	if d == nil {
+		return
+	}
+
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
+
+	newHk, err := factory.BuildHotkey(d.cfg, d.log, d.HotkeyHandler())
+	if err != nil {
+		d.log.Warn("voice: reload hotkey failed; keeping current binding",
+			slog.String("key", d.cfg.Hotkey.Key),
+			slog.Any("err", err),
+		)
+
+		return
+	}
+
+	if d.hotkey != nil {
+		if stopErr := d.hotkey.Stop(); stopErr != nil {
+			d.log.Warn("voice: previous hotkey stop failed", slog.Any("err", stopErr))
+		}
+	}
+
+	d.hotkey = newHk
+	d.hotkeyMode = d.cfg.Hotkey.Mode
+
+	go d.runHotkey(ctx)
+
+	d.log.Info("voice: hotkey reloaded",
+		slog.String("key", d.cfg.Hotkey.Key),
+		slog.Any("modifiers", d.cfg.Hotkey.Modifiers),
+		slog.String("mode", string(d.cfg.Hotkey.Mode)),
+	)
+}
 
 // acceptToggle returns true when the Toggle should be processed.
 //

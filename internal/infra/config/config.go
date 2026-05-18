@@ -225,36 +225,13 @@ const (
 	VoiceHotkeyModeHold VoiceHotkeyMode = "hold"
 )
 
-// VoiceHotkeyBackend selects which adapter implements the global hotkey.
-type VoiceHotkeyBackend string
-
-const (
-	// VoiceHotkeyBackendAuto picks the best backend for the current
-	// session: portal on Wayland (if available), x11 on Xorg (if the
-	// binary has the `x11` build tag), otherwise none.
-	VoiceHotkeyBackendAuto VoiceHotkeyBackend = "auto"
-
-	// VoiceHotkeyBackendX11 uses XGrabKey directly. Requires Xorg session
-	// and a binary built with -tags=x11.
-	VoiceHotkeyBackendX11 VoiceHotkeyBackend = "x11"
-
-	// VoiceHotkeyBackendEvdev reads raw key events from /dev/input/event*.
-	// Linux-only, works under any session (Wayland, X11, console). Sees both
-	// Press and Release so hold-mode binds work correctly. Requires read
-	// access to /dev/input/event* — usually membership in the "input" group.
-	VoiceHotkeyBackendEvdev VoiceHotkeyBackend = "evdev"
-
-	// VoiceHotkeyBackendNone disables the built-in listener entirely;
-	// the user is expected to bind via DE shortcut (GNOME/KDE/i3 config).
-	VoiceHotkeyBackendNone VoiceHotkeyBackend = "none"
-)
-
-// VoiceHotkeyConfig groups built-in global hotkey settings. The chosen
-// Backend determines which adapter implements the listener; Mode shapes
-// how raw key edges drive the state machine.
+// VoiceHotkeyConfig groups built-in global hotkey settings. The Linux
+// evdev backend is the only implementation; Mode shapes how raw key
+// edges drive the state machine. The listener is always active — the
+// hotkey is the only way to start recording outside the tray UI.
 type VoiceHotkeyConfig struct {
-	// Key is the keysym name (e.g. "F12", "D", "space"). Required when
-	// Enabled is true; an empty value fails daemon startup with a clear error.
+	// Key is the keysym name (e.g. "F12", "D", "space"). An empty value
+	// fails daemon startup with a clear error.
 	Key string `mapstructure:"key"`
 
 	// Modifiers is a list of modifier names combined with Key. Recognised
@@ -263,16 +240,8 @@ type VoiceHotkeyConfig struct {
 	// commutative.
 	Modifiers []string `mapstructure:"modifiers"`
 
-	// Backend selects the adapter. Default "auto".
-	Backend VoiceHotkeyBackend `mapstructure:"backend"`
-
 	// Mode selects toggle vs hold semantics. Default "toggle".
 	Mode VoiceHotkeyMode `mapstructure:"mode"`
-
-	// Enabled turns the built-in listener on. Default false. When false
-	// the daemon does not register any hotkey and relies on the user
-	// invoking `a2text` via a DE shortcut (which is the press-only path).
-	Enabled bool `mapstructure:"enabled"`
 }
 
 // VoiceSTTRetryConfig groups STT retry settings. The decorator is wired into
@@ -666,9 +635,7 @@ func knownConfigKeys() map[string]bool {
 		"hotkey":           true,
 		"hotkey.key":       true,
 		"hotkey.modifiers": true,
-		"hotkey.backend":   true,
 		"hotkey.mode":      true,
-		"hotkey.enabled":   true,
 		// stt_retry
 		"stt_retry":               true,
 		"stt_retry.enabled":       true,

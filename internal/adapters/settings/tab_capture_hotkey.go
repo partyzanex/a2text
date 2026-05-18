@@ -28,11 +28,8 @@ func (w *Window) buildCaptureHotkeyTab(ff *formFields) fyne.CanvasObject {
 	)
 
 	hotkey := rowsCard(i18n.T(i18n.KeyCardHotkey),
-		formRowWithHelp(i18n.T(i18n.KeyLabelHotkeyEnabled), "help.hotkey_enabled",
-			leftAlign(ff.hotkeyEnabled)),
 		formRowWithHelp(i18n.T(i18n.KeyLabelHotkeyBinding), "help.hotkey_binding", ff.hotkeyBinding),
 		formRowWithHelp(i18n.T(i18n.KeyLabelMode), "help.hotkey_mode", ff.hotkeyMode),
-		formRowWithHelp(i18n.T(i18n.KeyLabelBackend), "help.hotkey_backend", ff.hotkeyBackend),
 	)
 
 	output := rowsCard(i18n.T(i18n.KeyCardOutput),
@@ -64,10 +61,10 @@ func (w *Window) buildCaptureFieldWidgets(ff *formFields) {
 	)
 }
 
-// buildHotkeyFieldWidgets allocates hotkey-row widgets (enable check,
-// capture button, mode + backend selects).
+// buildHotkeyFieldWidgets allocates hotkey-row widgets (capture button +
+// mode select). The evdev backend is implicit and the listener is always
+// active, so no backend select or enable check is exposed.
 func (w *Window) buildHotkeyFieldWidgets(ff *formFields) {
-	ff.hotkeyEnabled = widget.NewCheck("", nil)
 	ff.hotkeyBinding = newHotkeyCaptureButton(
 		w.cfg.Hotkey.Key, w.cfg.Hotkey.Modifiers, w.log,
 		func(key string, mods []string) {
@@ -88,14 +85,6 @@ func (w *Window) buildHotkeyFieldWidgets(ff *formFields) {
 		},
 		nil,
 	)
-	ff.hotkeyBackend = widget.NewSelect(
-		[]string{
-			string(config.VoiceHotkeyBackendAuto),
-			string(config.VoiceHotkeyBackendEvdev),
-			string(config.VoiceHotkeyBackendNone),
-		},
-		nil,
-	)
 }
 
 // applyCaptureFields writes capture form values back to the config.
@@ -109,9 +98,7 @@ func (w *Window) applyCaptureFields(ff *formFields) {
 
 // applyHotkeyFields writes hotkey form values back to the config.
 func (w *Window) applyHotkeyFields(ff *formFields) {
-	w.cfg.Hotkey.Enabled = ff.hotkeyEnabled.Checked
 	w.cfg.Hotkey.Key = ff.hotkeyBinding.Key()
 	w.cfg.Hotkey.Modifiers = ff.hotkeyBinding.Modifiers()
 	w.cfg.Hotkey.Mode = config.VoiceHotkeyMode(ff.hotkeyMode.Selected)
-	w.cfg.Hotkey.Backend = config.VoiceHotkeyBackend(ff.hotkeyBackend.Selected)
 }

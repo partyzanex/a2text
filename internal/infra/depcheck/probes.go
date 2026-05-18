@@ -576,46 +576,13 @@ func unknownAutopasteDep(cmd string) Dependency {
 }
 
 // hotkeyDeps returns the dependencies for the built-in global hotkey listener.
-// Honors cfg.Hotkey.Backend:
-//
-//   - disabled / "none": no deps (DE shortcut path, nothing to check).
-//   - "x11": no depcheck-level probe; the XGrabKey error surfaces at Listen.
-//   - "" / "auto": no depcheck needed — auto picks x11 on Xorg or none; no
-//     built-in hotkey on Wayland (use DE shortcut).
+// evdev is the only backend; the listener is always active.
 func hotkeyDeps(cfg *config.VoiceConfig) []Dependency {
-	if cfg == nil || !cfg.Hotkey.Enabled {
+	if cfg == nil {
 		return nil
 	}
 
-	backend := cfg.Hotkey.Backend
-	if backend == "" {
-		backend = config.VoiceHotkeyBackendAuto
-	}
-
-	switch backend {
-	case config.VoiceHotkeyBackendNone, config.VoiceHotkeyBackendAuto:
-		return nil
-
-	case config.VoiceHotkeyBackendX11:
-		// X11 doesn't have a useful pre-Listen probe: XGrabKey may fail on
-		// a busy combo, but XOpenDisplay reachability is already covered by
-		// the platform check. Surface a config-presence dep instead.
-		return []Dependency{x11HotkeyDep()}
-
-	case config.VoiceHotkeyBackendEvdev:
-		return []Dependency{evdevHotkeyDep()}
-
-	default:
-		return []Dependency{{
-			Name:        "backend",
-			Group:       GroupHotkey,
-			RequiredFor: "hotkey backend selection",
-			InstallHint: fmt.Sprintf(
-				"unknown hotkey.backend %q (allowed: auto, x11, evdev, none)", string(backend),
-			),
-			Check: func(_ context.Context, _ Env) CheckResult { return CheckResult{} },
-		}}
-	}
+	return []Dependency{evdevHotkeyDep()}
 }
 
 // firstReadable returns true if the given /dev/input/event* path can be
@@ -662,28 +629,6 @@ func evdevHotkeyDep() Dependency {
 			}
 
 			return CheckResult{Detail: "no readable /dev/input/event* device"}
-		},
-	}
-}
-
-// x11HotkeyDep is a passive presence-check for the X11 backend. The real
-// XGrabKey failure surfaces at Listen — at depcheck time all we can confirm
-// is "the binary was built with -tags=x11 and DISPLAY is set". Even that
-// is a moving target across build configurations, so we keep the probe
-// optional and informational.
-func x11HotkeyDep() Dependency {
-	return Dependency{
-		Name:        "x11_session",
-		Group:       GroupHotkey,
-		Optional:    true,
-		RequiredFor: "global hotkey via XGrabKey",
-		InstallHint: "X11 hotkey backend requires Xorg session + binary built with -tags=x11 (make build-x11)",
-		Check: func(_ context.Context, _ Env) CheckResult {
-			if os.Getenv("DISPLAY") == "" {
-				return CheckResult{}
-			}
-
-			return CheckResult{Found: true, Detail: "$DISPLAY=" + os.Getenv("DISPLAY")}
 		},
 	}
 }
