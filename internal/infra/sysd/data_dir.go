@@ -39,3 +39,28 @@ func WhisperCppModelsDir() (string, error) {
 
 	return filepath.Join(home, ".local", "share", AppName, "models"), nil
 }
+
+// KeptAudioDir returns the conventional per-user directory where archived
+// recordings (cfg.privacy.keep_audio=true) are stored on this machine.
+// Honours XDG_DATA_HOME with a fallback to `~/.local/share/<AppName>/audio`,
+// mirroring WhisperCppModelsDir.
+//
+// Used by:
+//   - the settings UI to pre-fill the "Папка для аудио" entry on a fresh
+//     install so the user sees the actual default path rather than empty;
+//   - the kept-audio archiver as the first resort destination when the
+//     user has not overridden the path.
+//
+// Returns an error only when $HOME is unresolvable.
+func KeptAudioDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dir != "" {
+		return filepath.Join(dir, AppName, "audio"), nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("sysd: resolve $HOME for kept-audio dir: %w", err)
+	}
+
+	return filepath.Join(home, ".local", "share", AppName, "audio"), nil
+}

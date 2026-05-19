@@ -52,17 +52,7 @@ func (e *FFmpegOGGEncoder) Encode(
 	ctx, cancel := withTimeout(ctx, e.timeout)
 	defer cancel()
 
-	// -y overwrites existing dst (rare — Archiver renames a .partial),
-	// -hide_banner / -loglevel error keep stderr quiet on success.
-	args := []string{
-		"-y",
-		"-hide_banner",
-		"-loglevel", "error",
-		"-i", srcPath,
-		"-c:a", "libvorbis",
-		"-q:a", "5",
-		dstPath,
-	}
+	args := buildOGGArgs(srcPath, dstPath)
 
 	cmd := exec.CommandContext(ctx, ffmpegBin)
 	cmd.Args = append(cmd.Args, args...)
@@ -80,6 +70,30 @@ func (e *FFmpegOGGEncoder) Encode(
 	}
 
 	return nil
+}
+
+// buildOGGArgs returns the ffmpeg argument list used to transcode the
+// source WAV into Vorbis-encoded OGG. Extracted so unit tests can assert
+// on the argv without spawning ffmpeg.
+//
+//   - -y overwrites existing dst (rare — Archiver renames a .partial).
+//   - -hide_banner / -loglevel error keep stderr quiet on success.
+//   - -f ogg forces the container muxer because the Archiver writes to a
+//     `.ogg.partial` path; ffmpeg's extension-based format detection sees
+//     `.partial` and refuses with "Unable to choose an output format".
+//   - -c:a libvorbis -q:a 5 ≈ 96 kbps voice — adequate archival for 16 kHz
+//     mono speech and ~6× smaller than the source WAV.
+func buildOGGArgs(srcPath, dstPath string) []string {
+	return []string{
+		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", srcPath,
+		"-c:a", "libvorbis",
+		"-q:a", "5",
+		"-f", "ogg",
+		dstPath,
+	}
 }
 
 func validateEncodePaths(src, dst string) error {

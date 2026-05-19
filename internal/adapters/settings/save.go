@@ -214,6 +214,8 @@ func applyPrivacyToMap(dst map[string]any, cfg *config.VoiceConfig) {
 
 	privacy["log_transcript"] = cfg.Privacy.LogTranscript
 	privacy["keep_audio"] = cfg.Privacy.KeepAudio
+	privacy["keep_audio_dir"] = cfg.Privacy.KeepAudioDir
+	privacy["keep_audio_format"] = cfg.Privacy.KeepAudioFormat
 	dst["privacy"] = privacy
 }
 

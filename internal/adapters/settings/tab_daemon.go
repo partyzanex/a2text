@@ -16,7 +16,24 @@ import (
 
 	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/sysd"
 )
+
+// defaultKeptAudioDir returns the per-user audio archive path
+// ($XDG_DATA_HOME/a2text/audio). Empty string if $HOME is unresolvable —
+// the caller falls back to a blank placeholder rather than guessing.
+func defaultKeptAudioDir(log *slog.Logger) string {
+	dir, err := sysd.KeptAudioDir()
+	if err != nil {
+		if log != nil {
+			log.Warn("settings: resolve default kept-audio dir failed", slog.Any("err", err))
+		}
+
+		return ""
+	}
+
+	return dir
+}
 
 // buildDaemonTab assembles the "Процесс" tab: autostart, IPC,
 // working-files, logging and privacy. Technical infrastructure
@@ -104,7 +121,7 @@ func (w *Window) buildOutputHotkeyDaemonFieldWidgets(ff *formFields) {
 // directory entry, format select).
 func (w *Window) buildPrivacyFieldWidgets(ff *formFields) {
 	ff.keepAudio = widget.NewCheck("", nil)
-	ff.keepAudioDir = entryWithText(w.cfg.Privacy.KeepAudioDir, "")
+	ff.keepAudioDir = entryWithText(w.cfg.Privacy.KeepAudioDir, defaultKeptAudioDir(w.log))
 	ff.keepAudioFormat = widget.NewSelect(
 		[]string{
 			config.VoiceKeepAudioFormatWAV,

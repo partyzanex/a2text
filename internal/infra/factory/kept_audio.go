@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/partyzanex/a2text/internal/infra/config"
+	"github.com/partyzanex/a2text/internal/infra/sysd"
 	"github.com/partyzanex/a2text/pkg/audio"
 	"github.com/partyzanex/a2text/pkg/audioarchive"
 )
@@ -92,14 +93,19 @@ func (k *keptAudioArchiver) Archive(ctx context.Context, audioPath string) (stri
 
 // resolveDestDir picks the directory to archive into, in priority:
 //  1. cfg.Privacy.KeepAudioDir, if the user set it;
-//  2. cfg.TempDir, the "working files" location;
-//  3. os.TempDir() as the last-resort default.
+//  2. sysd.KeptAudioDir() — the conventional `$XDG_DATA_HOME/a2text/audio`;
+//  3. cfg.TempDir, the "working files" location;
+//  4. os.TempDir() as the last-resort default.
 //
-// The chain mirrors the rest of the codebase's temp-dir resolution so
-// the file lands somewhere predictable even when the user has not
-// touched the new setting at all.
+// The chain prefers a stable, user-discoverable archive location over
+// $TMPDIR so kept recordings survive reboots and land somewhere the user
+// can find without grepping logs.
 func (k *keptAudioArchiver) resolveDestDir() string {
 	if dir := strings.TrimSpace(k.cfg.Privacy.KeepAudioDir); dir != "" {
+		return dir
+	}
+
+	if dir, err := sysd.KeptAudioDir(); err == nil && dir != "" {
 		return dir
 	}
 
