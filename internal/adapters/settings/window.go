@@ -163,6 +163,18 @@ func New(cfg *config.VoiceConfig, log *slog.Logger) *Window {
 func (w *Window) Run() {
 	runtime.LockOSThread()
 
+	// Pin Fyne's scale factor to 1.0 unless the user explicitly overrode it.
+	// Fyne's DPI auto-detect tends to pick >1.0 on common laptop panels,
+	// which makes the settings window read "for the visually impaired"
+	// rather than dense. Honour an explicit FYNE_SCALE so power users on
+	// hi-DPI displays can still bump it up.
+	if os.Getenv("FYNE_SCALE") == "" {
+		if err := os.Setenv("FYNE_SCALE", "1"); err != nil {
+			w.log.Warn("settings: pin FYNE_SCALE failed; using Fyne auto-scale",
+				slog.Any("err", err))
+		}
+	}
+
 	fyneApp := app.NewWithID("io.github.partyzanex.a2text")
 	fyneApp.Settings().SetTheme(ui.Theme())
 	fyneApp.SetIcon(assets.AppIcon())

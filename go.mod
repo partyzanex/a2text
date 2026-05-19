@@ -20,8 +20,8 @@ require (
 )
 
 require (
-	github.com/FyshOS/fancyfs v0.0.0-20251025194026-1f03098ff624 // indirect
-	github.com/anthonynsimon/bild v0.13.0 // indirect
+	github.com/FyshOS/fancyfs v0.0.1 // indirect
+	github.com/anthonynsimon/bild v0.15.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dvonthenen/websocket v1.5.1-dyv.2 // indirect
 	github.com/fatih/color v1.19.0 // indirect
@@ -115,4 +115,6 @@ require (
 	golang.org/x/text v0.37.0
 )
 
+// Pinned to a fork carrying nil-canvas guards for Select.showPopUp (fyne-io/fyne#5965).
+// Revert to upstream once the fix lands in a tagged Fyne release.
 replace fyne.io/fyne/v2 => github.com/partyzanex/fyne/v2 v2.0.0-20260517234636-e7d0cd26023d

@@ -34,7 +34,7 @@ temp_dir: ""
 convert_timeout: "60s"
 transcribe_timeout: "10m"
 
-log_level: "debug"
+log_level: "info"
 
 capture:
   backend: "auto"

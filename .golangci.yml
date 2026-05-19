@@ -22,6 +22,14 @@ linters:
 
   # Linters configuration (migrated from `linters-settings` in v1).
   settings:
+    gomoddirectives:
+      # Allow the replace directive pinning Fyne to a fork that carries
+      # unreleased upstream fixes (fyne-io/fyne#5965, nil-canvas guards in
+      # Select.showPopUp). Drop this entry once a tagged Fyne release
+      # contains the fix and the replace is removed from go.mod.
+      replace-allow-list:
+        - fyne.io/fyne/v2
+
     errcheck:
       check-type-assertions: false
       check-blank: true
