@@ -1,0 +1,341 @@
+// Keyboard subsystem of a2textd.
+//
+// The daemon owns both halves of the kernel keyboard pipeline that
+// require the "input" group: reading physical key events from
+// /dev/input/event* (evdev) and writing synthetic key events to
+// /dev/uinput. This service surfaces both halves to UI clients over
+// the loopback gRPC channel (mTLS-pinned), plus a non-hotkey trigger
+// (StartCycle) that lets the UI begin a recording cycle from the
+// tray menu or a settings button.
+//
+// Read side: StreamHotkeyEvents pushes semantic transitions of the
+// daemon-configured hotkey. The daemon translates physical edges
+// using its HOLD/TOGGLE config so the UI sees ready-to-use kinds.
+//
+// Write side: Inject hands the daemon a transcript and lets the
+// daemon decide, from its config-driven output policy, what to do
+// with it. The daemon may press Ctrl+V on its persistent uinput
+// keyboard (INJECT_MODE_PASTE — primary flow), report that the
+// active policy is clipboard-only and that the UI must complete the
+// delivery itself (INJECT_MODE_CLIPBOARD), or — once implemented —
+// type the payload key-by-key (INJECT_MODE_TYPE, wire-reserved but
+// not yet honoured).
+//
+// Trigger side: StartCycle is the UI-initiated equivalent of a
+// physical hotkey press. It begins a recording cycle on the daemon
+// and returns the inject_token the UI will need at paste time.
+//
+// Out of scope: clipboard writes (wl-copy, xclip, pbcopy) and the
+// display-socket autopaste backends (wtype, xdotool) do NOT go through
+// this service. The UI has direct access to the user's display socket
+// and invokes those tools locally.
+//
+// Race-guarding (verifying the clipboard still contains the expected
+// transcript before Ctrl+V is injected) is the UI's responsibility
+// because the UI owns the clipboard view. The daemon trusts the
+// request and presses keys.
+syntax = "proto3";
+
+package a2text.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/partyzanex/a2text/pkg/proto/a2text/v1;a2textv1";
+
+// KeyboardService merges hotkey-read and uinput-write into one wire
+// surface. Every RPC is invoked under mTLS.
+service KeyboardService {
+  // StreamHotkeyEvents subscribes the caller to semantic hotkey events
+  // produced from the daemon-owned evdev binding. The daemon reads its
+  // config to decide how to translate physical key transitions into
+  // events:
+  //   * mode = HOLD   → emits PRESS on key-down, RELEASE on key-up.
+  //   * mode = TOGGLE → emits TOGGLE on key-down; key-up is suppressed.
+  // The stream is framed: the very first frame is always an
+  // InitialState that snapshots the daemon's view at the moment of
+  // subscribe (current mode and whether the daemon already considers
+  // itself recording, e.g. because the user was holding the hotkey
+  // when the UI connected). Every subsequent frame carries a single
+  // HotkeyEvent. The server keeps the stream open until the client
+  // cancels or the daemon shuts down. Events are best-effort: slow
+  // consumers may see dropped HotkeyEvent frames (lossy ring buffer
+  // policy). The InitialState frame is never dropped — the daemon
+  // delays acknowledging the stream until it has been pushed.
+  rpc StreamHotkeyEvents(StreamHotkeyEventsRequest) returns (stream HotkeyStreamFrame);
+
+  // Inject hands the daemon a transcript and asks it to act on it
+  // according to the active output policy. The request must carry
+  // the inject_token issued by the cycle that produced the
+  // transcript (via HotkeyEvent or RecordingService.StartCycle);
+  // the daemon rejects requests with an empty, unknown, expired, or
+  // already-consumed token. The same token on retry yields the
+  // cached response without performing a second uinput action.
+  //
+  // The daemon may resolve the call to:
+  //   * INJECT_MODE_PASTE     — synthesise a Ctrl+V chord on the
+  //     uinput keyboard. The UI must have written the transcript to
+  //     the clipboard beforehand. This is the primary supported flow.
+  //   * INJECT_MODE_CLIPBOARD — clipboard-only output policy; the
+  //     daemon performed no uinput action. The UI is fully
+  //     responsible for delivering the transcript via its local
+  //     clipboard helper.
+  //   * INJECT_MODE_TYPE      — wire-reserved future fallback;
+  //     currently rejected by the daemon.
+  //
+  // The mode the daemon resolved to is returned in
+  // InjectResponse.mode so the UI can log it and confirm the daemon's
+  // read of the policy. Expected gRPC error codes: INVALID_ARGUMENT
+  // (empty text or empty token), PERMISSION_DENIED (unknown,
+  // expired, or consumed token), FAILED_PRECONDITION (uinput device
+  // unavailable).
+  rpc Inject(InjectRequest) returns (InjectResponse);
+
+  // StartCycle begins a new recording cycle on behalf of the caller
+  // and returns the inject_token the caller will need at paste time.
+  // The daemon enters the same state machine it would on a physical
+  // hotkey press: starts audio capture, mints a fresh token, and
+  // emits a HotkeyEvent on every active StreamHotkeyEvents
+  // subscription so observer UIs see the cycle begin. The token
+  // expires after a daemon-side TTL if Inject is never called.
+  //
+  // Stop is not exposed: cycles end on their own terms (silence
+  // gate, max-duration timeout, or a physical hotkey press while a
+  // UI-initiated cycle is in flight). Adding a stop RPC later is
+  // non-breaking.
+  //
+  // Expected gRPC error codes: FAILED_PRECONDITION (a cycle is
+  // already in flight), RESOURCE_EXHAUSTED (audio device not
+  // available).
+  rpc StartCycle(StartCycleRequest) returns (StartCycleResponse);
+}
+
+// StreamHotkeyEventsRequest opens a subscription to hotkey events.
+// Empty by design; subscription scope is implicit (the single daemon-
+// owned binding). Future filter fields will be added with new tag
+// numbers when there is a real reason.
+message StreamHotkeyEventsRequest {
+}
+
+// HotkeyStreamFrame is the wire frame the server-stream of
+// StreamHotkeyEvents carries. The first frame in every subscription
+// is always payload.initial_state; every subsequent frame carries
+// payload.event.
+message HotkeyStreamFrame {
+  // exactly one of the two payload variants is set per frame.
+  oneof payload {
+    // synchronous snapshot of the daemon's hotkey state at the
+    // moment of subscribe. Sent exactly once, as the first frame.
+    InitialState initial_state = 1;
+
+    // a single semantic hotkey transition observed after the
+    // initial snapshot was delivered.
+    HotkeyEvent event = 2;
+  }
+}
+
+// InitialState is the synchronous snapshot the daemon sends as the
+// very first frame on every StreamHotkeyEvents subscription. It lets
+// the UI converge to the daemon's view without a separate
+// GetHotkeyState round trip — no race window between probe and
+// subscribe.
+message InitialState {
+  // whether the daemon currently considers itself recording (the
+  // user was holding the hotkey at the moment of subscribe, or a
+  // TOGGLE press has not yet been balanced by another TOGGLE).
+  HotkeyState state = 1;
+
+  // active hotkey mode the daemon read from its config. The UI uses
+  // it to know how to interpret upcoming HotkeyEvent.kind values.
+  HotkeyMode mode = 2;
+
+  // the inject_token of the cycle currently in flight, if state is
+  // HOTKEY_STATE_RECORDING. Lets a UI that reconnected in the middle
+  // of an active recording (after its own crash or restart) pick up
+  // the live token and still legitimately complete the cycle with
+  // Inject. Empty when state is HOTKEY_STATE_IDLE.
+  string active_inject_token = 3;
+}
+
+// HotkeyState enumerates the daemon-side recording state that the UI
+// must mirror on the tray badge / status indicator. Used only in
+// InitialState; subsequent transitions are surfaced via HotkeyEvent.
+enum HotkeyState {
+  // sentinel for the proto3 default-zero slot. The daemon never
+  // emits this value; clients that receive it should treat the
+  // frame as malformed (log + drop). Reserved so that the zero
+  // value is unambiguously an error and not a legitimate state.
+  HOTKEY_STATE_INVALID = 0;
+
+  // no recording is in flight.
+  HOTKEY_STATE_IDLE = 1;
+
+  // the daemon is currently recording (HOLD with the key still down,
+  // or TOGGLE that has not yet been turned off).
+  HOTKEY_STATE_RECORDING = 2;
+}
+
+// HotkeyMode mirrors config.hotkey.mode and tells the UI how the
+// daemon interprets the event stream. Used only in InitialState; the
+// per-event HotkeyEventKind is self-describing for subsequent frames.
+enum HotkeyMode {
+  // sentinel for the proto3 default-zero slot. The daemon never
+  // emits this value; clients that receive it should treat the
+  // frame as malformed (log + drop). Reserved so that the zero
+  // value is unambiguously an error and not a legitimate mode.
+  HOTKEY_MODE_INVALID = 0;
+
+  // press starts recording, release stops it (push-to-talk).
+  HOTKEY_MODE_HOLD = 1;
+
+  // each press toggles recording on or off; release events are
+  // suppressed by the daemon.
+  HOTKEY_MODE_TOGGLE = 2;
+}
+
+// HotkeyEvent represents a single semantic hotkey transition. The kind
+// field is self-describing: PRESS/RELEASE imply HOLD mode, TOGGLE
+// implies TOGGLE mode (see HotkeyEventKind).
+message HotkeyEvent {
+  // kind of the transition (press, release, or toggle).
+  HotkeyEventKind kind = 1;
+
+  // wall-clock time the daemon read the event from the kernel.
+  google.protobuf.Timestamp emit_time = 2;
+
+  // monotonically increasing per-subscription counter, starting at 1
+  // for the first event the daemon delivers on this stream. The
+  // counter is reset every time a new StreamHotkeyEvents call is
+  // accepted. Clients use it to detect drops under the lossy
+  // ring-buffer policy: any gap (next_sequence != last_sequence + 1)
+  // means the daemon discarded one or more frames it could not push
+  // to a slow consumer.
+  uint64 sequence = 3;
+
+  // daemon-issued token bound to the recording cycle this event
+  // belongs to. Populated on every event that is part of a cycle —
+  // PRESS and RELEASE in HOLD mode, both TOGGLE events in TOGGLE
+  // mode — and all events of one cycle carry the same value. The
+  // daemon mints the token on the cycle-start event (PRESS, first
+  // TOGGLE) and reuses it verbatim on the cycle-end event (RELEASE,
+  // second TOGGLE). UIs hand this token to KeyboardService.Inject
+  // when the transcript is ready: the daemon rejects Inject calls
+  // whose token it did not issue, is expired, or has already been
+  // consumed, which simultaneously authorises the call and makes
+  // retries idempotent. The token is wire-encoded as a string; the
+  // daemon currently emits 16-byte random values (UUIDv4-shaped)
+  // but clients must treat it as an opaque identifier.
+  string inject_token = 4;
+}
+
+// HotkeyEventKind enumerates the semantic kinds the daemon emits.
+// Which kind appears in the stream depends on the active mode:
+//   * HOLD   produces PRESS (key-down) and RELEASE (key-up).
+//   * TOGGLE produces TOGGLE on each key-down; key-up is suppressed.
+enum HotkeyEventKind {
+  // sentinel for the proto3 default-zero slot. The daemon never
+  // emits this value; clients that receive it should treat the
+  // frame as malformed (log + drop). Reserved so that the zero
+  // value is unambiguously an error and not a legitimate kind.
+  HOTKEY_EVENT_KIND_INVALID = 0;
+
+  // the configured hotkey just went down (HOLD mode only).
+  HOTKEY_EVENT_KIND_PRESS = 1;
+
+  // the configured hotkey just came up (HOLD mode only).
+  HOTKEY_EVENT_KIND_RELEASE = 2;
+
+  // the configured hotkey was tapped once and the daemon flipped the
+  // recording state (TOGGLE mode only).
+  HOTKEY_EVENT_KIND_TOGGLE = 3;
+}
+
+// InjectRequest carries the transcript the UI wants written into the
+// user's focused window. The daemon picks the strategy.
+message InjectRequest {
+  // the UTF-8 transcript to deliver. The daemon may type it directly
+  // (uinput type mode) or treat it as the expected clipboard payload
+  // when it presses Ctrl+V (uinput paste mode).
+  string text = 1;
+
+  // daemon-issued token bound to the recording cycle that produced
+  // this transcript. Required: the daemon rejects requests with an
+  // empty, unknown, expired, or already-consumed token. This
+  // double-duties as authorisation (only hotkey-driven or
+  // StartCycle-initiated cycles can drive Inject) and as the
+  // idempotency key (a retry with the same token returns the cached
+  // response without performing a second uinput action). Sourced
+  // from HotkeyEvent.inject_token, StartCycleResponse.inject_token,
+  // or InitialState.active_inject_token.
+  string inject_token = 2;
+}
+
+// InjectResponse reports what the daemon actually did, so the UI can
+// distinguish "nothing typed" from "fully typed" and surface the
+// active strategy without parsing daemon logs.
+message InjectResponse {
+  // strategy the daemon executed for this request.
+  InjectMode mode = 1;
+
+  // number of low-level key events the daemon wrote to /dev/uinput.
+  // Zero means the request was a no-op (e.g. type mode with only
+  // unmappable codepoints).
+  int32 events_written = 2;
+}
+
+// InjectMode enumerates the delivery strategies the daemon may pick
+// for an Inject call. The choice is made server-side from config; the
+// caller never sets this on a request — it is only ever observed in
+// InjectResponse.mode. Values are ordered from least to most
+// invasive: clipboard-only (no uinput at all), chord (one Ctrl+V),
+// per-character typing.
+enum InjectMode {
+  // sentinel for the proto3 default-zero slot. The daemon never
+  // emits this value; clients that receive it should treat the
+  // response as malformed (log + drop). Reserved so that the zero
+  // value is unambiguously an error and not a legitimate mode.
+  INJECT_MODE_INVALID = 0;
+
+  // daemon performed no uinput action because the active output
+  // policy is clipboard-only. The transcript was intentionally not
+  // pasted; the UI is fully responsible for delivering it (typically
+  // by writing it to the user's clipboard via the local
+  // wl-copy/xclip/pbcopy helper). Returned so the UI can confirm the
+  // daemon's read of the policy and skip waiting for paste-side
+  // side-effects.
+  INJECT_MODE_CLIPBOARD = 1;
+
+  // daemon pressed Ctrl+V on the uinput keyboard. The UI is assumed
+  // to have written the transcript into the user's clipboard before
+  // making the call (race-guard belongs in the UI). This is the
+  // killer-feature flow of a2text and the primary supported mode.
+  INJECT_MODE_PASTE = 2;
+
+  // wire-reserved for a future per-character typing fallback (daemon
+  // would press every codepoint of the request text on the uinput
+  // keyboard, skipping unmappable codepoints with a warning). The
+  // daemon does NOT honour this mode at this stage; clients should
+  // not expect requests to ever resolve to it. The enum value is
+  // kept so that adding the implementation later is non-breaking.
+  INJECT_MODE_TYPE = 3;
+}
+
+// StartCycleRequest is empty by design. Future fields (a caller hint
+// for the cycle's output policy, an explicit timeout override) will
+// be added with new tag numbers when there is a real reason.
+message StartCycleRequest {
+}
+
+// StartCycleResponse carries the inject_token the caller must hand
+// back to Inject when the cycle's transcript is ready.
+message StartCycleResponse {
+  // opaque token bound to this cycle. Identical to the value the
+  // daemon also embeds in the corresponding HotkeyEvent on the
+  // StreamHotkeyEvents stream, so a UI that drives StartCycle and a
+  // UI that listens on the stream see the same identifier.
+  string inject_token = 1;
+
+  // wall-clock time after which the daemon will refuse Inject calls
+  // carrying this token. Clients use it to surface a "transcript
+  // expired" warning if their pipeline takes too long.
+  google.protobuf.Timestamp expire_time = 2;
+}

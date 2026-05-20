@@ -1,4 +1,12 @@
-include go.mk
+include proto.mk
+
+# Generated protobuf code lives inside the main Go module instead of as a
+# separately-vendored sub-module: override the proto.mk default
+# (EXCLUDE_DIRS ?= google) so the auto `go mod init` loop also skips our
+# `a2text` package. Without this the loop creates pkg/proto/a2text/go.mod
+# and pins it to GO_VERSION=1.24, which fails tidy against grpc deps that
+# require Go 1.25+.
+EXCLUDE_DIRS := google a2text
 
 # `make` with no arguments runs the binary build, not whatever target
 # go.mk happened to declare first. Set explicitly so the default never
@@ -386,7 +394,7 @@ verify-modules:
 
 # --- go.mk bootstrap ---
 
-go.mk:
+proto.mk:
 	@tmpdir=$$(mktemp -d) && \
 	git clone --depth 1 --single-branch https://github.com/partyzanex/go-makefile.git $$tmpdir && \
-	cp $$tmpdir/go.mk $(CURDIR)/go.mk
+	cp $$tmpdir/proto.mk $(CURDIR)/proto.mk
