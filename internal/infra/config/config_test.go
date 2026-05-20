@@ -28,7 +28,7 @@ func TestExampleConfig_ParsesAndValidates(t *testing.T) {
 	require.NotNil(t, cfg)
 
 	require.Equal(t, config.VoiceProviderWhisperCpp, cfg.Provider)
-	require.Equal(t, "ru", cfg.Language)
+	require.Equal(t, "en", cfg.Language)
 
 	// URL is the full base including the API path. Legacy configs with a
 	// separate "prefix" key are merged into URL during LoadVoice — see the

@@ -80,11 +80,29 @@ func (w *Window) buildHotkeyFieldWidgets(ff *formFields) {
 	)
 	ff.hotkeyMode = widget.NewSelect(
 		[]string{
-			string(config.VoiceHotkeyModeToggle),
-			string(config.VoiceHotkeyModeHold),
+			i18n.T(i18n.KeyHotkeyModeToggle),
+			i18n.T(i18n.KeyHotkeyModeHold),
 		},
 		nil,
 	)
+}
+
+// hotkeyModeLabel maps a config value to its localised select option.
+func hotkeyModeLabel(m config.VoiceHotkeyMode) string {
+	if m == config.VoiceHotkeyModeHold {
+		return i18n.T(i18n.KeyHotkeyModeHold)
+	}
+
+	return i18n.T(i18n.KeyHotkeyModeToggle)
+}
+
+// hotkeyModeFromLabel maps a select option back to the config value.
+func hotkeyModeFromLabel(label string) config.VoiceHotkeyMode {
+	if label == i18n.T(i18n.KeyHotkeyModeHold) {
+		return config.VoiceHotkeyModeHold
+	}
+
+	return config.VoiceHotkeyModeToggle
 }
 
 // applyCaptureFields writes capture form values back to the config.
@@ -100,5 +118,5 @@ func (w *Window) applyCaptureFields(ff *formFields) {
 func (w *Window) applyHotkeyFields(ff *formFields) {
 	w.cfg.Hotkey.Key = ff.hotkeyBinding.Key()
 	w.cfg.Hotkey.Modifiers = ff.hotkeyBinding.Modifiers()
-	w.cfg.Hotkey.Mode = config.VoiceHotkeyMode(ff.hotkeyMode.Selected)
+	w.cfg.Hotkey.Mode = hotkeyModeFromLabel(ff.hotkeyMode.Selected)
 }

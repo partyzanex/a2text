@@ -220,9 +220,10 @@ func TestSttLanguageOrDefault_RoundTrip(t *testing.T) {
 func TestUILanguageOrDefault_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "ru", uiLanguageOrDefault(""))
-	assert.Equal(t, "ru", uiLanguageOrDefault("xx"))
+	assert.Equal(t, "en", uiLanguageOrDefault(""))
+	assert.Equal(t, "en", uiLanguageOrDefault("xx"))
 	assert.Equal(t, "en", uiLanguageOrDefault("en"))
+	assert.Equal(t, "ru", uiLanguageOrDefault("ru"))
 }
 
 func TestHelpIcon_MinSizeMatchesConstant(t *testing.T) {

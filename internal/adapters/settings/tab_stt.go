@@ -124,8 +124,8 @@ func (w *Window) buildSTTFieldWidgets() *formFields {
 			},
 			nil,
 		),
-		language:            newLanguageSelect(sttLanguageCodes()),
-		uiLanguage:          newLanguageSelect(i18n.SupportedLanguages),
+		language:            newLanguageSelect(sttLanguageOptions()),
+		uiLanguage:          newLanguageSelect(uiLanguageOptions()),
 		whisperURL:          entryWithText(w.cfg.GoWhisper.URL, "http://localhost:9081/api/whisper"),
 		whisperModel:        newModelSelectEntry(w.cfg.GoWhisper.Model),
 		whisperTimeout:      entryWithText(formatDuration(w.cfg.GoWhisper.Timeout), "30s"),
@@ -405,8 +405,8 @@ func wireWhisperCppModelChange(ff *formFields) {
 // applySTTFields writes STT-related form values back to the config.
 func (w *Window) applySTTFields(ff *formFields) {
 	w.cfg.Provider = ff.provider.Selected
-	w.cfg.Language = ff.language.Selected
-	w.cfg.UILanguage = ff.uiLanguage.Selected
+	w.cfg.Language = sttLanguageCodeFromLabel(ff.language.Selected)
+	w.cfg.UILanguage = uiLanguageCodeFromLabel(ff.uiLanguage.Selected)
 	w.cfg.GoWhisper.URL = ff.whisperURL.Text
 	w.cfg.GoWhisper.Model = ff.whisperModel.Text
 	w.cfg.GoWhisper.Timeout = parseDuration(ff.whisperTimeout.Text)
@@ -1019,6 +1019,71 @@ func sttLanguageCodes() []string {
 	codes = append(codes, i18n.SupportedLanguages...)
 
 	return codes
+}
+
+// langDisplay maps a language code (or the special "auto" sentinel) to a
+// human-readable label localised to the active UI language. Falls back to
+// the code itself if the translation is missing so the dropdown never
+// renders an empty option.
+func langDisplay(code string) string {
+	key := "lang." + code
+
+	label := i18n.T(key)
+	if label == "" || label == key {
+		return code
+	}
+
+	return label
+}
+
+// sttLanguageOptions returns the localised labels for the STT-language
+// dropdown in the same order as sttLanguageCodes.
+func sttLanguageOptions() []string {
+	codes := sttLanguageCodes()
+	out := make([]string, 0, len(codes))
+
+	for _, code := range codes {
+		out = append(out, langDisplay(code))
+	}
+
+	return out
+}
+
+// uiLanguageOptions returns the localised labels for the UI-language
+// dropdown in the same order as i18n.SupportedLanguages.
+func uiLanguageOptions() []string {
+	out := make([]string, 0, len(i18n.SupportedLanguages))
+
+	for _, code := range i18n.SupportedLanguages {
+		out = append(out, langDisplay(code))
+	}
+
+	return out
+}
+
+// sttLanguageCodeFromLabel reverses langDisplay for the STT-language
+// dropdown. Unknown labels fall back to the auto-detect sentinel so a
+// stale or translated label never corrupts the saved config.
+func sttLanguageCodeFromLabel(label string) string {
+	for _, code := range sttLanguageCodes() {
+		if langDisplay(code) == label {
+			return code
+		}
+	}
+
+	return sttLanguageAuto
+}
+
+// uiLanguageCodeFromLabel reverses langDisplay for the UI-language
+// dropdown. Unknown labels fall back to the default UI locale.
+func uiLanguageCodeFromLabel(label string) string {
+	for _, code := range i18n.SupportedLanguages {
+		if langDisplay(code) == label {
+			return code
+		}
+	}
+
+	return i18n.DefaultLanguage
 }
 
 // newLanguageSelect builds a widget.Select pre-populated with the given

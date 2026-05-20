@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/partyzanex/a2text/internal/i18n"
 	"github.com/partyzanex/a2text/internal/infra/config"
 )
 
@@ -27,9 +28,24 @@ func TestBuildHotkeyFieldWidgets_ModeOptions(t *testing.T) {
 	require.NotNil(t, ff.hotkeyMode)
 	assert.Equal(t,
 		[]string{
-			string(config.VoiceHotkeyModeToggle),
-			string(config.VoiceHotkeyModeHold),
+			i18n.T(i18n.KeyHotkeyModeToggle),
+			i18n.T(i18n.KeyHotkeyModeHold),
 		},
 		ff.hotkeyMode.Options,
 	)
+}
+
+// TestHotkeyModeLabelRoundtrip confirms label↔config mapping is bijective —
+// guards against UI labels drifting from stored config values.
+func TestHotkeyModeLabelRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	for _, m := range []config.VoiceHotkeyMode{
+		config.VoiceHotkeyModeToggle,
+		config.VoiceHotkeyModeHold,
+	} {
+		assert.Equal(t, m, hotkeyModeFromLabel(hotkeyModeLabel(m)))
+	}
+
+	assert.Equal(t, config.VoiceHotkeyModeToggle, hotkeyModeFromLabel("unknown"))
 }

@@ -1,5 +1,5 @@
 provider: "whisper-cpp"
-language: "ru"
+language: "en"
 
 go_whisper:
   # URL includes the full API base path. The legacy `prefix` field is

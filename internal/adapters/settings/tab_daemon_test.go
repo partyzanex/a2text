@@ -4,10 +4,28 @@ import (
 	"os"
 	"testing"
 
+	"fyne.io/fyne/v2/widget"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"fyne.io/fyne/v2/widget"
+
+	"github.com/partyzanex/a2text/internal/infra/config"
 )
+
+// TestOutputModeLabelRoundtrip confirms label↔config mapping is bijective —
+// guards against UI labels drifting from stored config values.
+func TestOutputModeLabelRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	for _, m := range []string{
+		config.VoiceOutputModeStdout,
+		config.VoiceOutputModeClipboard,
+		config.VoiceOutputModeClipboardAutopaste,
+	} {
+		assert.Equal(t, m, outputModeFromLabel(outputModeLabel(m)))
+	}
+
+	assert.Equal(t, config.VoiceOutputModeClipboard, outputModeFromLabel("unknown"))
+}
 
 // TestBuildTempDirFieldNotNil verifies that buildTempDirField returns a non-nil container.
 func TestBuildTempDirFieldNotNil(t *testing.T) {

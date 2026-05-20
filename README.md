@@ -16,7 +16,7 @@ The evdev hotkey backend reads raw `input_event` packets from `/dev/input/event*
 sudo usermod -aG input "$USER"  # log out + log back in for the group to take effect
 ```
 
-The kernel input subsystem delivers **every** keypress on every opened device - there is no per-window or per-focus filtering at that layer. To narrow the surface, the daemon now calls `EVIOCGBIT(EV_KEY)` on each device and **keeps only those whose kernel-reported keycap bitmap contains the configured hotkey or one of its modifiers**. Power buttons, lid switches, accelerometers, tablet pens, fingerprint readers, on-screen keyboards, and similar non-keyboards are skipped before any read; on a typical laptop this cuts the daemon's `/dev/input` fd count from ~22 down to 1-2 physical keyboards. The buffer holding each `input_event` is also zeroed immediately after dispatch so a panic + core dump cannot leak recent keystrokes; the example systemd unit additionally sets `LimitCORE=0` to disable core dumps altogether.
+The kernel input subsystem delivers **every** keypress on every opened device - there is no per-window or per-focus filtering at that layer. To narrow the surface, the daemon now calls `EVIOCGBIT(EV_KEY)` on each device and **keeps only those whose kernel-reported keycap bitmap contains the configured hotkey or one of its modifiers**. Power buttons, lid switches, accelerometers, tablet pens, fingerprint readers, on-screen keyboards, and similar non-keyboards are skipped before any read; on a typical laptop this cuts the daemon's `/dev/input` fd count from ~22 down to 1-2 physical keyboards. The buffer holding each `input_event` is also zeroed immediately after dispatch so a panic cannot leak recent keystrokes via the heap. If you wrap the binary in a systemd unit, autostart launcher, or container, configure it to disable core dumps (`LimitCORE=0`, `ulimit -c 0`, or `prctl(PR_SET_DUMPABLE, 0)` in a parent) to close the core-dump leak path as well.
 
 Without `input` group membership the evdev backend cannot start and the daemon refuses to launch.
 
@@ -36,7 +36,7 @@ If you run untrusted same-UID code, prefer `output.mode: clipboard` (no autopast
 - **Autopaste** synthesises Ctrl+V via `/dev/uinput` after every transcription cycle. The pre-Paste clipboard race-guard refuses to fire when the clipboard contents have changed since Deliver, blocking the most direct same-UID keystroke-injection path. Set `output.mode: clipboard` to disable autopaste entirely.
 - **Cloud STT providers** (OpenAI, Deepgram) receive raw audio. Cloud routing is **off by default** - the default config points at local `go-whisper` or `whisper-cpp`. Switching to a cloud provider uploads audio to that vendor; review their data-retention policy before enabling.
 - **whisper.cpp models** are downloaded from HuggingFace mirrors. The downloader does not yet verify SHA-256 against a pinned manifest. Audit the model file before pointing the daemon at it on hostile networks.
-- **API keys** in `~/.config/a2text/config.yaml` are plaintext YAML. Use the `A2TEXT_*_API_KEY` env vars (daemon reads them from systemd `EnvironmentFile=`) if you do not want them on disk.
+- **API keys** in `~/.config/a2text/config.yaml` are plaintext YAML. Use the `A2TEXT_*_API_KEY` env vars if you do not want them on disk.
 - **Audit trail** at `$XDG_DATA_HOME/a2text/audit.log` (default `~/.local/share/a2text/audit.log`). Append-only, `0o600`. Records cloud STT calls (provider, endpoint, HTTP status, audio sha256, transcript length). Rotate manually.
 
 ## Features
@@ -200,7 +200,7 @@ Select via `output.autopaste_command` in config, or let `auto` choose.
 
 ```bash
 a2text                          # start daemon (tray + settings UI)
-a2text --daemon                 # explicit daemon mode (for systemd units)
+a2text --daemon                 # explicit daemon mode (no tray/UI)
 a2text --provider whisper-cpp   # override STT provider for this invocation
 a2text --lang en                # override language
 a2text --log-level debug        # override log level

@@ -7,7 +7,49 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/partyzanex/a2text/internal/i18n"
 )
+
+// TestLangDisplay confirms code→label mapping uses i18n and falls back to
+// the code when the translation key is missing. TestMain initialises
+// i18n with "ru", so labels here are the Russian ones.
+func TestLangDisplay(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "Авто", langDisplay("auto"))
+	assert.Equal(t, "Русский", langDisplay("ru"))
+	assert.Equal(t, "Английский", langDisplay("en"))
+	// Unknown code: no "lang.xx" key → falls back to the code itself so
+	// the dropdown never renders an empty option.
+	assert.Equal(t, "xx", langDisplay("xx"))
+}
+
+// TestSttLanguageCodeFromLabelRoundtrip guards against label↔code drift
+// for the STT-language dropdown.
+func TestSttLanguageCodeFromLabelRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range sttLanguageCodes() {
+		assert.Equal(t, code, sttLanguageCodeFromLabel(langDisplay(code)),
+			"roundtrip failed for STT code %q", code)
+	}
+
+	assert.Equal(t, sttLanguageAuto, sttLanguageCodeFromLabel("garbage"))
+}
+
+// TestUILanguageCodeFromLabelRoundtrip guards against label↔code drift
+// for the UI-language dropdown.
+func TestUILanguageCodeFromLabelRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range i18n.SupportedLanguages {
+		assert.Equal(t, code, uiLanguageCodeFromLabel(langDisplay(code)),
+			"roundtrip failed for UI code %q", code)
+	}
+
+	assert.Equal(t, i18n.DefaultLanguage, uiLanguageCodeFromLabel("garbage"))
+}
 
 // TestScanWhisperCppModels_Empty verifies that empty directory returns empty slice.
 func TestScanWhisperCppModels_Empty(t *testing.T) {

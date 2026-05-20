@@ -43,7 +43,7 @@ const (
 	// defaultUILanguage is the locale used to render the settings window
 	// and tray when the user has not chosen one. Keep in sync with
 	// internal/i18n.DefaultLanguage.
-	defaultUILanguage = "ru"
+	defaultUILanguage = "en"
 )
 
 // VoiceConfig is the configuration for the cmd/a2text voice CLI.
@@ -59,7 +59,7 @@ type VoiceConfig struct {
 	Language string `mapstructure:"language"`
 
 	// UILanguage is the locale used to render the settings window and
-	// tray menu. Falls back to "ru" when empty. Supported values track
+	// tray menu. Falls back to "en" when empty. Supported values track
 	// internal/i18n/messages/*.toml.
 	UILanguage string `mapstructure:"ui_language"`
 
@@ -653,7 +653,7 @@ func knownConfigKeys() map[string]bool {
 
 func setVoiceDefaults(viperInst *viper.Viper) {
 	viperInst.SetDefault("provider", VoiceProviderWhisperCpp)
-	viperInst.SetDefault("language", "ru")
+	viperInst.SetDefault("language", "en")
 	viperInst.SetDefault("go_whisper.url", "http://localhost:9081/api/whisper")
 	viperInst.SetDefault("go_whisper.model", "ggml-small")
 	viperInst.SetDefault("go_whisper.timeout", "10m")

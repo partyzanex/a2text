@@ -135,13 +135,22 @@
 "help.channels" = "Number of capture channels. Whisper is mono — typically 1."
 "help.max_duration" = "Hard limit on a single recording length (e.g. 60s). Exceeding it stops the recording."
 "help.silence_threshold" = "Silence floor in dBFS. Recordings below this RMS skip STT entirely, avoiding hallucinations on empty audio."
-"help.output_mode" = "Where to send the recognised text: stdout, clipboard, or clipboard + auto-paste into the focused window."
+"help.output_mode" = "Where to send the recognised text: clipboard, or clipboard + auto-paste into the focused window. The stdout mode is config-only (voice.yaml) for headless / script-pipe use."
 "help.autopaste_command" = "Auto-paste backend: auto (pick by environment), uinput (Wayland-friendly), wtype, ydotool, xdotool."
 "help.restore_clipboard" = "Put the previous clipboard contents back after auto-paste fires. Only the primary MIME type (text or image) is preserved."
 "help.hotkey_key" = "Key that toggles or holds the recording (e.g. R, F4)."
 "help.hotkey_modifiers" = "Comma-separated modifier list (super, ctrl, alt, shift)."
 "help.hotkey_binding" = "Click the button and press the combo (e.g. Ctrl+Shift+R) to bind it. Esc cancels."
-"help.hotkey_mode" = "toggle — press toggles recording; hold — record while pressed."
+"help.hotkey_mode" = "Toggle — press toggles recording; Hold — record while pressed."
+
+# --- Hotkey modes ---
+"hotkey.mode.toggle" = "Toggle (press to start/stop)"
+"hotkey.mode.hold" = "Hold (push-to-talk)"
+
+# --- Output modes ---
+"output.mode.stdout" = "Stdout (print to terminal)"
+"output.mode.clipboard" = "Clipboard (copy, paste manually)"
+"output.mode.clipboard_autopaste" = "Clipboard + auto-paste (copy and paste into focused window)"
 "help.grace_period" = "Maximum time the daemon is allowed to drain on SIGTERM (e.g. 15s)."
 "help.temp_dir" = "Where to write temporary WAV files between capture and STT. Empty = $TMPDIR."
 "help.convert_timeout" = "Timeout for audio conversion to WAV before STT."

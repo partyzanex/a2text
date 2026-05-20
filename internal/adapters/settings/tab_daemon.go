@@ -78,14 +78,20 @@ func (w *Window) buildDaemonTab(ff *formFields) fyne.CanvasObject {
 
 // buildOutputHotkeyDaemonFieldWidgets fills output, hotkey, daemon and privacy widgets into ff.
 func (w *Window) buildOutputHotkeyDaemonFieldWidgets(ff *formFields) {
-	ff.outputMode = widget.NewSelect(
-		[]string{
-			config.VoiceOutputModeStdout,
-			config.VoiceOutputModeClipboard,
-			config.VoiceOutputModeClipboardAutopaste,
-		},
-		nil,
-	)
+	// stdout is intentionally NOT listed: it serves headless / script-pipe
+	// power users who edit voice.yaml directly. Exposing it in the GUI
+	// confuses desktop users (daemon stdout normally goes to journald
+	// alongside JSON logs). The option is preserved when already set in
+	// the config so the user's value is not silently lost.
+	outputModeOptions := []string{
+		i18n.T(i18n.KeyOutputModeClipboard),
+		i18n.T(i18n.KeyOutputModeClipboardAutopaste),
+	}
+	if w.cfg != nil && w.cfg.Output.Mode == config.VoiceOutputModeStdout {
+		outputModeOptions = append(outputModeOptions, i18n.T(i18n.KeyOutputModeStdout))
+	}
+
+	ff.outputMode = widget.NewSelect(outputModeOptions, nil)
 	ff.autopaste = widget.NewSelect(
 		[]string{
 			config.VoiceAutopasteCommandAuto,
@@ -249,9 +255,33 @@ func pickFolder(currentPath string) (string, error) {
 
 // applyOutputFields writes output form values back to the config.
 func (w *Window) applyOutputFields(ff *formFields) {
-	w.cfg.Output.Mode = ff.outputMode.Selected
+	w.cfg.Output.Mode = outputModeFromLabel(ff.outputMode.Selected)
 	w.cfg.Output.AutopasteCommand = ff.autopaste.Selected
 	w.cfg.Output.RestoreClipboard = ff.restoreClipboard.Checked
+}
+
+// outputModeLabel maps a config value to its localised select option.
+func outputModeLabel(mode string) string {
+	switch mode {
+	case config.VoiceOutputModeStdout:
+		return i18n.T(i18n.KeyOutputModeStdout)
+	case config.VoiceOutputModeClipboardAutopaste:
+		return i18n.T(i18n.KeyOutputModeClipboardAutopaste)
+	default:
+		return i18n.T(i18n.KeyOutputModeClipboard)
+	}
+}
+
+// outputModeFromLabel maps a select option back to the config value.
+func outputModeFromLabel(label string) string {
+	switch label {
+	case i18n.T(i18n.KeyOutputModeStdout):
+		return config.VoiceOutputModeStdout
+	case i18n.T(i18n.KeyOutputModeClipboardAutopaste):
+		return config.VoiceOutputModeClipboardAutopaste
+	default:
+		return config.VoiceOutputModeClipboard
+	}
 }
 
 // applyDaemonFields writes daemon form values back to the config.

@@ -506,7 +506,8 @@ func (w *Window) buildContent() fyne.CanvasObject {
 	// locale so labels, tooltips and card titles re-resolve through i18n.T.
 	// Schedule() persists the change; Init must happen before SetContent so
 	// the rebuilt widgets pick up the new translations.
-	ff.uiLanguage.OnChanged = func(code string) {
+	ff.uiLanguage.OnChanged = func(label string) {
+		code := uiLanguageCodeFromLabel(label)
 		w.cfg.UILanguage = code
 
 		if err := i18n.Init(code); err != nil {
@@ -619,10 +620,12 @@ func (w *Window) buildFieldWidgets() *formFields {
 
 // setFieldValues initialises select/check widget states from the current config.
 func (w *Window) setFieldValues(ff *formFields) {
-	hotkeyMode := string(w.cfg.Hotkey.Mode)
-	if hotkeyMode == "" {
-		hotkeyMode = string(config.VoiceHotkeyModeToggle)
+	hotkeyModeValue := w.cfg.Hotkey.Mode
+	if hotkeyModeValue == "" {
+		hotkeyModeValue = config.VoiceHotkeyModeToggle
 	}
+
+	hotkeyMode := hotkeyModeLabel(hotkeyModeValue)
 
 	captureBackend := w.cfg.Capture.Backend
 	if captureBackend == "" {
@@ -640,10 +643,10 @@ func (w *Window) setFieldValues(ff *formFields) {
 	}
 
 	ff.provider.SetSelected(w.cfg.Provider)
-	ff.language.SetSelected(sttLanguageOrDefault(w.cfg.Language))
-	ff.uiLanguage.SetSelected(uiLanguageOrDefault(w.cfg.UILanguage))
+	ff.language.SetSelected(langDisplay(sttLanguageOrDefault(w.cfg.Language)))
+	ff.uiLanguage.SetSelected(langDisplay(uiLanguageOrDefault(w.cfg.UILanguage)))
 	ff.captureBackend.SetSelected(captureBackend)
-	ff.outputMode.SetSelected(w.cfg.Output.Mode)
+	ff.outputMode.SetSelected(outputModeLabel(w.cfg.Output.Mode))
 	ff.autopaste.SetSelected(autopaste)
 	ff.hotkeyMode.SetSelected(hotkeyMode)
 	ff.logLevel.SetSelected(logLevel)

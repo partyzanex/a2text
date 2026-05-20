@@ -38,7 +38,7 @@ import (
 
 // DefaultLanguage is the locale used when Init is not called or the
 // requested language is not bundled.
-const DefaultLanguage = "ru"
+const DefaultLanguage = "en"
 
 // SupportedLanguages enumerates locales shipped with the binary. UI code
 // uses this to populate the "UI language" select; adding a new locale
