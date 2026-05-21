@@ -1,4 +1,4 @@
-// Package secretstore is the file-backed implementation of the
+// Package secret is the file-backed implementation of the
 // adapter's SecretRepository contract. It persists provider API
 // keys and other long-lived secrets the daemon itself needs at
 // runtime.
@@ -17,7 +17,7 @@
 // characters) round-trip safely. Writes are atomic: the new content
 // is written to a sibling .tmp file and renamed over the canonical
 // path so a crash mid-write never leaves a truncated store.
-package secretstore
+package secret
 
 import (
 	"context"
@@ -45,7 +45,7 @@ const currentVersion = 1
 // ErrInvalidKey is returned by Set when the supplied key is empty.
 // Adapters typically catch this earlier and surface it as
 // INVALID_ARGUMENT.
-var ErrInvalidKey = errors.New("secretstore: invalid key")
+var ErrInvalidKey = errors.New("secret: invalid key")
 
 // Store is the in-memory cache + persistent file for the daemon's
 // secrets. Safe for concurrent use. Constructors return concrete
@@ -94,7 +94,7 @@ func New(path string, clock func() time.Time) (*Store, error) {
 	}
 
 	if err := store.load(); err != nil {
-		return nil, fmt.Errorf("secretstore: load %q: %w", path, err)
+		return nil, fmt.Errorf("secret: load %q: %w", path, err)
 	}
 
 	return store, nil
@@ -121,7 +121,7 @@ func (s *Store) Set(_ context.Context, key string, value []byte) (time.Time, err
 	}
 
 	if err := s.persistLocked(); err != nil {
-		return time.Time{}, fmt.Errorf("secretstore: persist: %w", err)
+		return time.Time{}, fmt.Errorf("secret: persist: %w", err)
 	}
 
 	return now, nil

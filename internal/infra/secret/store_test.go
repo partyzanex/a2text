@@ -1,4 +1,4 @@
-package secretstore_test
+package secret_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
-	"github.com/partyzanex/a2text/internal/infra/secretstore"
+	"github.com/partyzanex/a2text/internal/infra/secret"
 )
 
 // StoreSuite covers the file-backed Store: Set / List / Get
@@ -22,7 +22,7 @@ type StoreSuite struct {
 	dir   string
 	path  string
 	clock fakeClock
-	store *secretstore.Store
+	store *secret.Store
 }
 
 // fakeClock returns a deterministic now() so storeTime assertions
@@ -41,7 +41,7 @@ func (s *StoreSuite) SetupTest() {
 	s.path = filepath.Join(s.dir, "secrets.json")
 	s.clock = fakeClock{current: time.Unix(1_700_000_000, 0).UTC()}
 
-	store, err := secretstore.New(s.path, s.clock.now)
+	store, err := secret.New(s.path, s.clock.now)
 	s.Require().NoError(err)
 	s.store = store
 }
@@ -79,7 +79,7 @@ func (s *StoreSuite) TestSet_BinarySafe() {
 // store layer.
 func (s *StoreSuite) TestSet_EmptyKeyRejected() {
 	_, err := s.store.Set(context.Background(), "", []byte("v"))
-	s.Require().ErrorIs(err, secretstore.ErrInvalidKey)
+	s.Require().ErrorIs(err, secret.ErrInvalidKey)
 }
 
 // TestSet_OverwriteUpdatesTime verifies a second Set on the same
@@ -137,7 +137,7 @@ func (s *StoreSuite) TestPersistence_ReopenSeesPreviousWrites() {
 	_, err := s.store.Set(context.Background(), "openai", []byte("sk-A"))
 	s.Require().NoError(err)
 
-	reopened, err := secretstore.New(s.path, s.clock.now)
+	reopened, err := secret.New(s.path, s.clock.now)
 	s.Require().NoError(err)
 
 	got, _, ok := reopened.Get("openai")
@@ -185,7 +185,7 @@ func (s *StoreSuite) TestPersistence_FileFormatIsJSONWithBase64Values() {
 // TestNew_MissingFileIsEmptyStore verifies pointing New at a
 // non-existent path yields an empty store and not an error.
 func (s *StoreSuite) TestNew_MissingFileIsEmptyStore() {
-	store, err := secretstore.New(filepath.Join(s.dir, "absent.json"), s.clock.now)
+	store, err := secret.New(filepath.Join(s.dir, "absent.json"), s.clock.now)
 	s.Require().NoError(err)
 
 	records, err := store.List(context.Background())
@@ -199,7 +199,7 @@ func (s *StoreSuite) TestNew_MissingFileIsEmptyStore() {
 func (s *StoreSuite) TestNew_CorruptFileSurfacesError() {
 	s.Require().NoError(os.WriteFile(s.path, []byte("{not json"), 0o600))
 
-	_, err := secretstore.New(s.path, s.clock.now)
+	_, err := secret.New(s.path, s.clock.now)
 	s.Require().Error(err)
 }
 
