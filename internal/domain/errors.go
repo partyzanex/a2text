@@ -32,6 +32,11 @@ var (
 	// can be initialised. The CLI prints the install hint.
 	ErrCaptureUnavailable = errors.New("voice: audio capture unavailable")
 
+	// ErrCycleInFlight is returned by the cycle trigger when a new
+	// cycle is requested while another one is already running. The
+	// gRPC adapter surfaces this as FAILED_PRECONDITION.
+	ErrCycleInFlight = errors.New("voice: recording cycle in flight")
+
 	// ErrUnknownEvent is returned when the event string is not part of the
 	// declared Event vocabulary at all. Distinct from ErrInvalidEventForState
 	// (event is known but the current state does not accept it) and from

@@ -68,6 +68,14 @@ type Tray struct {
 	quitFn     func()
 	icons      map[domain.State][]byte
 	iconOnce   sync.Once
+
+	// menuMu protects the menu-item handles which are created inside
+	// systray.Run on first start and updated by RefreshLabels when the
+	// UI language changes at runtime.
+	menuMu    sync.Mutex
+	mToggle   *systray.MenuItem
+	mSettings *systray.MenuItem
+	mQuit     *systray.MenuItem
 }
 
 // New returns a Tray wired with the given callbacks.
@@ -148,15 +156,42 @@ func (tr *Tray) Run(ctx context.Context) {
 		systray.SetIcon(tr.iconFor(domain.StateIdle))
 		systray.SetTooltip("a2text: idle")
 
-		mToggle := systray.AddMenuItem(i18n.T(i18n.KeyTrayToggle), "")
-		mSettings := systray.AddMenuItem(i18n.T(i18n.KeyTraySettings), "")
+		tr.menuMu.Lock()
+		tr.mToggle = systray.AddMenuItem(i18n.T(i18n.KeyTrayToggle), "")
+		tr.mSettings = systray.AddMenuItem(i18n.T(i18n.KeyTraySettings), "")
 
 		systray.AddSeparator()
 
-		mQuit := systray.AddMenuItem(i18n.T(i18n.KeyTrayQuit), "")
+		tr.mQuit = systray.AddMenuItem(i18n.T(i18n.KeyTrayQuit), "")
+		tr.menuMu.Unlock()
 
-		go tr.loop(ctx, mToggle, mSettings, mQuit)
+		// Re-resolve menu labels every time the UI language changes
+		// at runtime. Registered after the items exist so the very
+		// first invocation has handles to update.
+		i18n.OnLocaleChange(tr.refreshLabels)
+
+		go tr.loop(ctx, tr.mToggle, tr.mSettings, tr.mQuit)
 	}, func() {})
+}
+
+// refreshLabels re-resolves every menu item's title through i18n.T.
+// Used as the i18n locale-change listener so a runtime language
+// switch propagates to the long-lived tray menu without restart.
+func (tr *Tray) refreshLabels() {
+	tr.menuMu.Lock()
+	defer tr.menuMu.Unlock()
+
+	if tr.mToggle != nil {
+		tr.mToggle.SetTitle(i18n.T(i18n.KeyTrayToggle))
+	}
+
+	if tr.mSettings != nil {
+		tr.mSettings.SetTitle(i18n.T(i18n.KeyTraySettings))
+	}
+
+	if tr.mQuit != nil {
+		tr.mQuit.SetTitle(i18n.T(i18n.KeyTrayQuit))
+	}
 }
 
 // relayStates forwards state transitions from the external channel to the

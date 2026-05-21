@@ -630,11 +630,7 @@ type InjectRequest struct {
 	Text string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
 	// daemon-issued token bound to the recording cycle that produced
 	// this transcript. Required: the daemon rejects requests with an
-	// empty, unknown, expired, or already-consumed token. This
-	// double-duties as authorisation (only hotkey-driven or
-	// StartCycle-initiated cycles can drive Inject) and as the
-	// idempotency key (a retry with the same token returns the cached
-	// response without performing a second uinput action). Sourced
+	// empty, unknown, expired, or already-consumed token. Sourced
 	// from HotkeyEvent.inject_token, StartCycleResponse.inject_token,
 	// or InitialState.active_inject_token.
 	InjectToken   string `protobuf:"bytes,2,opt,name=inject_token,json=injectToken,proto3" json:"inject_token,omitempty"`

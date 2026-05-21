@@ -131,9 +131,65 @@ func (t *Translator) T(messageID string) string {
 //nolint:gochecknoglobals // process-wide default Translator, mutated only via Init
 var defaultTranslator = NewTranslator()
 
-// Init configures the default Translator. See Translator.Init.
+// LocaleChangeListener is invoked after a successful Init on the
+// package-level (default) Translator. Listeners receive no arguments
+// because the language is implicit (whatever the default Translator
+// now serves); each listener typically just calls T again to refresh
+// the strings it owns.
+//
+// Listeners are run synchronously, in registration order, on the
+// goroutine that called Init. Implementations must be fast and must
+// not call back into i18n.Init to avoid re-entrancy.
+type LocaleChangeListener func()
+
+//nolint:gochecknoglobals // observer registry for the default Translator
+var (
+	listenersMu sync.Mutex
+	listeners   []LocaleChangeListener
+)
+
+// OnLocaleChange registers a listener that will be invoked every time
+// the default Translator's locale is changed via Init. Listeners
+// cannot be unregistered today — the use case (tray, settings,
+// long-lived UI surfaces) does not need it; add an unsubscribe path
+// when a real caller needs to drop without process exit.
+func OnLocaleChange(fn LocaleChangeListener) {
+	if fn == nil {
+		return
+	}
+
+	listenersMu.Lock()
+	defer listenersMu.Unlock()
+
+	listeners = append(listeners, fn)
+}
+
+// Init configures the default Translator. See Translator.Init. On
+// success every listener registered via OnLocaleChange is invoked
+// synchronously so the live UI can refresh its captured strings.
 func Init(lang string) error {
-	return defaultTranslator.Init(lang)
+	if err := defaultTranslator.Init(lang); err != nil {
+		return err
+	}
+
+	notifyLocaleChange()
+
+	return nil
+}
+
+// notifyLocaleChange fans the locale-change signal out to every
+// registered listener. A snapshot is taken under the lock so a
+// listener that calls OnLocaleChange while running does not
+// recursively iterate.
+func notifyLocaleChange() {
+	listenersMu.Lock()
+	snap := make([]LocaleChangeListener, len(listeners))
+	copy(snap, listeners)
+	listenersMu.Unlock()
+
+	for _, fn := range snap {
+		fn()
+	}
 }
 
 // T returns the localised string for messageID against the default

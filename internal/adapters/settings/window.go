@@ -503,10 +503,23 @@ func (w *Window) buildContent() fyne.CanvasObject {
 	}
 
 	// Live UI-language switch: rebuild the entire content with the new
-	// locale so labels, tooltips and card titles re-resolve through i18n.T.
-	// Schedule() persists the change; Init must happen before SetContent so
-	// the rebuilt widgets pick up the new translations.
+	// locale so labels, tooltips and card titles re-resolve through
+	// i18n.T.
+	//
+	// Persist order matters: every label-backed Select stores its
+	// Selected value as the localised label, and the *FromLabel
+	// helpers (hotkeyModeFromLabel, sttLanguageCodeFromLabel, ...)
+	// compare against i18n.T at lookup time. If the debounced save
+	// fires AFTER i18n.Init it reads the OLD widget labels against
+	// the NEW translator, mismatches every comparison, and silently
+	// falls back to the default code — which is exactly the "selects
+	// reset to first option on language switch" regression. So:
+	// flush pending edits FIRST (still under the old locale), then
+	// update UILanguage in cfg, then switch the runtime locale, then
+	// persist again, and only then queue the content rebuild.
 	ff.uiLanguage.OnChanged = func(label string) {
+		w.saver.Flush()
+
 		code := uiLanguageCodeFromLabel(label)
 		w.cfg.UILanguage = code
 
@@ -514,7 +527,7 @@ func (w *Window) buildContent() fyne.CanvasObject {
 			w.log.Warn("settings: i18n switch failed", slog.Any("err", err))
 		}
 
-		w.saver.Schedule()
+		w.persistSave()
 
 		// Defer the rebuild to the next Fyne tick. Calling SetContent
 		// straight from the Select's OnChanged corrupts widget→canvas
