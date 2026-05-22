@@ -1,0 +1,43 @@
+# from example https://github.com/yoheimuta/protolint/blob/master/_example/config/.protolint.yaml
+lint:
+  directories:
+    exclude:
+      - proto/google
+
+  rules:
+    no_default: true
+    add:
+      - FIELD_NAMES_LOWER_SNAKE_CASE
+      - MESSAGE_NAMES_UPPER_CAMEL_CASE
+      - MAX_LINE_LENGTH
+      - INDENT
+      - SERVICE_NAMES_END_WITH
+      - FIELD_NAMES_EXCLUDE_PREPOSITIONS
+      - MESSAGE_NAMES_EXCLUDE_PREPOSITIONS
+      - FILE_NAMES_LOWER_SNAKE_CASE
+      - PACKAGE_NAME_LOWER_CASE
+      - MESSAGES_HAVE_COMMENT
+      - SERVICES_HAVE_COMMENT
+      - RPCS_HAVE_COMMENT
+      - FIELDS_HAVE_COMMENT
+      - PROTO3_FIELDS_AVOID_REQUIRED
+      - PROTO3_GROUPS_AVOID
+      - REPEATED_FIELD_NAMES_PLURALIZED
+      - ENUMS_HAVE_COMMENT
+      - ENUM_FIELDS_HAVE_COMMENT
+      - SYNTAX_CONSISTENT
+      - RPC_NAMES_CASE
+      - QUOTE_CONSISTENT
+
+    remove:
+      - ORDER
+      - FILE_HAS_COMMENT
+      - IMPORTS_SORTED
+
+  rules_option:
+    # MAX_LINE_LENGTH rule option.
+    max_line_length:
+      # Enforces a maximum line length
+      max_chars: 120
+      # Specifies the character count for tab characters
+      tab_chars: 2
