@@ -48,7 +48,7 @@ type ServerSuite struct {
 // SetupTest builds a fresh server bound to a kernel-assigned port
 // on the loopback interface and starts Serve in a goroutine.
 func (s *ServerSuite) SetupTest() {
-	s.srv = infragrpc.NewServer(slog.New(slog.DiscardHandler), &stubKeyboard{}, &stubSecret{})
+	s.srv = infragrpc.NewServer(slog.New(slog.DiscardHandler), &stubKeyboard{}, &stubSecret{}, nil)
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
@@ -202,7 +202,7 @@ func TestServerSuite(t *testing.T) {
 func TestServeBeforeListenErrors(t *testing.T) {
 	t.Parallel()
 
-	srv := infragrpc.NewServer(slog.New(slog.DiscardHandler), &stubKeyboard{}, &stubSecret{})
+	srv := infragrpc.NewServer(slog.New(slog.DiscardHandler), &stubKeyboard{}, &stubSecret{}, nil)
 
 	err := srv.Serve(context.Background())
 	if err == nil {

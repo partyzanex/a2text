@@ -3,9 +3,10 @@
 // the wire-service adapters created at bootstrap. The service-level
 // logic lives in internal/adapters/grpc/server.
 //
-// mTLS material is not wired yet; the server listens in plaintext
-// for local development. TLS credentials will be added to NewServer
-// once cert generation is in place.
+// mTLS is optional: when NewServer is given a non-nil *tls.Config
+// the server requires mTLS and rejects plaintext / untrusted-client
+// handshakes at the transport layer. A nil config keeps the server
+// in plaintext mode for local development.
 //
 // The external "google.golang.org/grpc" library is imported under
 // the alias `googlegrpc` to avoid colliding with this package's own
@@ -14,6 +15,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +24,7 @@ import (
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
@@ -51,10 +54,16 @@ type Server struct {
 // normally; every other connection has its RPCs rejected with
 // AlreadyExists. This enforces the "one UI per daemon, ever"
 // invariant at the transport layer.
+//
+// tlsConfig, when non-nil, switches the server to mTLS mode. The
+// caller is responsible for populating Certificates, ClientCAs and
+// setting ClientAuth = RequireAndVerifyClientCert. A nil value keeps
+// the server in plaintext mode (loopback dev only).
 func NewServer(
 	log *slog.Logger,
 	keyboard a2textv1.KeyboardServiceServer,
 	secret a2textv1.SecretServiceServer,
+	tlsConfig *tls.Config,
 ) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -62,11 +71,22 @@ func NewServer(
 
 	guard := &clientGuard{}
 
-	srv := googlegrpc.NewServer(
+	opts := []googlegrpc.ServerOption{
 		googlegrpc.StatsHandler(guard),
 		googlegrpc.UnaryInterceptor(guard.unary),
 		googlegrpc.StreamInterceptor(guard.stream),
-	)
+	}
+
+	if tlsConfig != nil {
+		opts = append(opts, googlegrpc.Creds(credentials.NewTLS(tlsConfig)))
+		log.Info("grpc: mTLS enabled",
+			slog.Int("server_certs", len(tlsConfig.Certificates)),
+		)
+	} else {
+		log.Warn("grpc: mTLS disabled — server running in plaintext (loopback dev only)")
+	}
+
+	srv := googlegrpc.NewServer(opts...)
 	a2textv1.RegisterKeyboardServiceServer(srv, keyboard)
 	a2textv1.RegisterSecretServiceServer(srv, secret)
 

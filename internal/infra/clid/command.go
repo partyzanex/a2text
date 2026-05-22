@@ -170,33 +170,12 @@ func action(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-// warnUnimplementedFlags emits a single warn-level record per flag that
-// the scaffold accepts but does not yet honour. Surfacing this in the
-// log keeps the contract honest: callers see at startup that --listen
-// or --cert is being ignored, instead of silently inheriting whatever
-// the embedded RunDaemonOnly path does.
-func warnUnimplementedFlags(cmd *cli.Command, logger *slog.Logger) {
-	const reasonMTLSNotWired = "mTLS handshake not wired (loopback gRPC currently plaintext)"
-
-	unimplemented := map[string]string{
-		FlagCertFile:     reasonMTLSNotWired,
-		FlagKeyFile:      reasonMTLSNotWired,
-		FlagClientCAFile: reasonMTLSNotWired,
-		FlagPprof:        "pprof endpoint not wired",
-	}
-
-	for name, reason := range unimplemented {
-		val := cmd.String(name)
-		if val == "" || val == defaultListenAddr {
-			continue
-		}
-
-		logger.Warn("flag accepted but not yet honoured",
-			slog.String("flag", name),
-			slog.String("value", val),
-			slog.String("reason", reason),
-		)
-	}
+// warnUnimplementedFlags is currently a no-op: every CLI flag is now
+// wired through to a real subsystem (listen → gRPC bind, cert/key/
+// client-ca → mTLS config, pprof → debug server, secrets-path →
+// SecretStore). Kept as an extension point so future flags can be
+// added with the same single-call ergonomics.
+func warnUnimplementedFlags(_ *cli.Command, _ *slog.Logger) {
 }
 
 // applyFlagOverrides mutates cfg in-place with CLI flag values. Caller

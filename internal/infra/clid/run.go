@@ -92,10 +92,13 @@ func runDaemon(
 	kbSvc := grpcserver.NewKeyboardService(logger, tokens, hub, injectSvc, hub)
 	secSvc := grpcserver.NewSecretService(logger, secStore)
 
-	grpcSrv := infragrpc.NewServer(logger, kbSvc, secSvc)
+	grpcSrv, err := buildGRPCServer(signalCtx, cmd, logger, kbSvc, secSvc)
+	if err != nil {
+		return err
+	}
 
-	if _, lErr := grpcSrv.Listen(signalCtx, cmd.String(FlagListenAddr)); lErr != nil {
-		return fmt.Errorf("bootstrap: listen: %w", lErr)
+	if pprofErr := startPprof(signalCtx, cmd.String(FlagPprof), logger); pprofErr != nil {
+		return fmt.Errorf("bootstrap: start pprof: %w", pprofErr)
 	}
 
 	reader, err := buildHotkeyReader(logger, hotkeyMode, tokens, hub, cfg)
@@ -106,6 +109,34 @@ func runDaemon(
 	mgr := buildShutdownChain(driver, grpcSrv, reader)
 
 	return serveUntilDone(signalCtx, logger, grpcSrv, reader, mgr)
+}
+
+// buildGRPCServer loads optional mTLS material, constructs the
+// transport server, and binds the loopback listener. Extracted from
+// runDaemon to keep that function under the funlen threshold.
+func buildGRPCServer(
+	signalCtx context.Context,
+	cmd *cli.Command,
+	logger *slog.Logger,
+	kbSvc a2textv1.KeyboardServiceServer,
+	secSvc a2textv1.SecretServiceServer,
+) (*infragrpc.Server, error) {
+	tlsConfig, err := loadServerTLS(
+		cmd.String(FlagCertFile),
+		cmd.String(FlagKeyFile),
+		cmd.String(FlagClientCAFile),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: load mTLS: %w", err)
+	}
+
+	grpcSrv := infragrpc.NewServer(logger, kbSvc, secSvc, tlsConfig)
+
+	if _, lErr := grpcSrv.Listen(signalCtx, cmd.String(FlagListenAddr)); lErr != nil {
+		return nil, fmt.Errorf("bootstrap: listen: %w", lErr)
+	}
+
+	return grpcSrv, nil
 }
 
 // buildHotkeyReader wraps the evdev reader constructor so runDaemon
