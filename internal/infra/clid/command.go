@@ -31,7 +31,6 @@ import (
 
 	cli2text "github.com/partyzanex/a2text/internal/infra/cli"
 	"github.com/partyzanex/a2text/internal/infra/config"
-	"github.com/partyzanex/a2text/internal/infra/daemon"
 )
 
 const (
@@ -48,10 +47,15 @@ const (
 	// after a successful config load.
 	runtimeErrorExitCode = 1
 
-	// defaultListenAddr binds the gRPC server to the IPv4 loopback with
-	// a kernel-assigned port. The actual port is written to the
-	// discovery file so the UI can find it without hard-coding.
-	defaultListenAddr = "127.0.0.1:0"
+	// defaultListenAddr binds the gRPC server to the IPv4 loopback on
+	// a fixed default port. The UI client uses the same default and
+	// can override via A2TEXT_LISTEN / --listen on its side; no
+	// discovery file is needed.
+	//
+	// Port 47834 is in the ephemeral / unassigned range and does not
+	// collide with IANA-registered services. Operators with a clash
+	// can override via --listen / $A2TEXTD_LISTEN.
+	defaultListenAddr = "127.0.0.1:47834"
 )
 
 // NewCommand returns the root cli.Command for a2textd. Constructors
@@ -83,14 +87,9 @@ func controlPlaneFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    FlagListenAddr,
-			Usage:   "loopback bind address for the gRPC control plane (default 127.0.0.1:0 — kernel-assigned port)",
+			Usage:   "loopback bind address for the gRPC control plane (default " + defaultListenAddr + ")",
 			Value:   defaultListenAddr,
 			Sources: cli.EnvVars("A2TEXTD_LISTEN"),
-		},
-		&cli.StringFlag{
-			Name:    FlagPortFile,
-			Usage:   "path to write the kernel-assigned port for UI discovery",
-			Sources: cli.EnvVars("A2TEXTD_PORT_FILE"),
 		},
 		&cli.StringFlag{
 			Name:    FlagCertFile,
@@ -132,6 +131,11 @@ func operationalFlags() []cli.Flag {
 				"empty = disabled. Loopback only.",
 			Sources: cli.EnvVars("A2TEXTD_PPROF"),
 		},
+		&cli.StringFlag{
+			Name:    FlagSecretsPath,
+			Usage:   "path to the file the SecretService stores provider credentials in (mode 0600)",
+			Sources: cli.EnvVars("A2TEXTD_SECRETS_PATH"),
+		},
 	}
 }
 
@@ -159,11 +163,7 @@ func action(ctx context.Context, cmd *cli.Command) error {
 
 	warnUnimplementedFlags(cmd, logger)
 
-	// Scaffold delegates to the existing single-process daemon entry
-	// point. The gRPC control plane, mTLS handshake, secrets store, and
-	// privilege drop will replace this body when ADR-0001 / ADR-0002
-	// land.
-	if err := daemon.RunDaemonOnly(signalCtx, cfg, logger, daemon.StdoutWriter()); err != nil {
+	if err := runDaemon(signalCtx, cmd, cfg, logger); err != nil {
 		return cli.Exit(fmt.Errorf("daemon: %w", err), runtimeErrorExitCode)
 	}
 
@@ -176,14 +176,12 @@ func action(ctx context.Context, cmd *cli.Command) error {
 // or --cert is being ignored, instead of silently inheriting whatever
 // the embedded RunDaemonOnly path does.
 func warnUnimplementedFlags(cmd *cli.Command, logger *slog.Logger) {
-	const reasonGRPCNotWired = "gRPC control plane not wired"
+	const reasonMTLSNotWired = "mTLS handshake not wired (loopback gRPC currently plaintext)"
 
 	unimplemented := map[string]string{
-		FlagListenAddr:   reasonGRPCNotWired,
-		FlagPortFile:     reasonGRPCNotWired,
-		FlagCertFile:     reasonGRPCNotWired,
-		FlagKeyFile:      reasonGRPCNotWired,
-		FlagClientCAFile: reasonGRPCNotWired,
+		FlagCertFile:     reasonMTLSNotWired,
+		FlagKeyFile:      reasonMTLSNotWired,
+		FlagClientCAFile: reasonMTLSNotWired,
 		FlagPprof:        "pprof endpoint not wired",
 	}
 

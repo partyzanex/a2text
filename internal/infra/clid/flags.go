@@ -12,20 +12,13 @@ const (
 	FlagLogLevel = "log-level"
 
 	// FlagListenAddr overrides the loopback bind address for the gRPC
-	// control plane. Defaults to "127.0.0.1:0" (kernel-assigned port);
-	// the chosen port is written to the discovery file so the UI can
-	// find it.
+	// control plane. Defaults to a fixed loopback address (see
+	// defaultListenAddr) so the UI client can connect without a
+	// port-discovery file.
 	//
 	// Bind to 127.0.0.1 only — gRPC traffic uses mTLS but the listener
 	// must not be reachable from anything outside the loopback interface.
 	FlagListenAddr = "listen"
-
-	// FlagPortFile overrides the file the daemon writes its actual
-	// listening port into so the UI can discover it.
-	//
-	// Default: /run/a2textd/<uid>/port (system install) or
-	// $XDG_RUNTIME_DIR/a2textd/port (user install).
-	FlagPortFile = "port-file"
 
 	// FlagCertFile and FlagKeyFile point at the daemon's TLS material
 	// for the gRPC server. The certificate is pinned by the UI; the key
@@ -43,4 +36,11 @@ const (
 	// disabled. Bind to loopback only — pprof exposes arbitrary stack
 	// and heap inspection to anyone who can connect.
 	FlagPprof = "pprof"
+
+	// FlagSecretsPath overrides the file the SecretService persists
+	// provider credentials to. Default: $XDG_DATA_HOME/a2text/secrets.json
+	// (or ~/.local/share/a2text/secrets.json). The file is created
+	// mode 0600 on first write; relies on the filesystem (LUKS at
+	// rest, POSIX perms at runtime) — no app-level encryption.
+	FlagSecretsPath = "secrets-path"
 )
