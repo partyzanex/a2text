@@ -201,6 +201,26 @@ func (s *HubSuite) TestEnd_IdleIsNoOp() {
 	}
 }
 
+// TestIsRecording_IdleByDefault verifies a fresh hub reports IDLE.
+func (s *HubSuite) TestIsRecording_IdleByDefault() {
+	s.False(s.hub.IsRecording())
+}
+
+// TestIsRecording_TrueAfterStart verifies Start flips the probe.
+func (s *HubSuite) TestIsRecording_TrueAfterStart() {
+	s.Require().NoError(s.hub.Start(context.Background(), "tok"))
+	s.True(s.hub.IsRecording())
+}
+
+// TestIsRecording_FalseAfterEnd verifies End resets the probe.
+func (s *HubSuite) TestIsRecording_FalseAfterEnd() {
+	s.Require().NoError(s.hub.Start(context.Background(), "tok"))
+	s.True(s.hub.IsRecording())
+
+	s.hub.End()
+	s.False(s.hub.IsRecording())
+}
+
 // TestEnd_AllowsNextStart verifies that after End, state is cleared
 // and the next Start succeeds.
 func (s *HubSuite) TestEnd_AllowsNextStart() {

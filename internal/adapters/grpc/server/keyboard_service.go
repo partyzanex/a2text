@@ -20,6 +20,7 @@ import (
 
 	"github.com/partyzanex/a2text/internal/domain"
 	"github.com/partyzanex/a2text/internal/infra/cycletoken"
+	"github.com/partyzanex/a2text/internal/usecases/hotkey"
 	a2textv1 "github.com/partyzanex/a2text/pkg/proto/a2text/v1"
 )
 
@@ -127,6 +128,11 @@ func (k *KeyboardService) StreamHotkeyEvents(
 
 	initial, events, err := k.source.Subscribe(ctx)
 	if err != nil {
+		if errors.Is(err, hotkey.ErrAlreadySubscribed) {
+			return status.Errorf(codes.FailedPrecondition,
+				"another subscriber is already attached to the hotkey stream")
+		}
+
 		k.log.Error("hotkey subscribe failed", slog.Any("error", err))
 
 		return status.Errorf(codes.Internal, "subscribe failed")

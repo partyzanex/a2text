@@ -1,17 +1,13 @@
-// Package hotkeyreader wires the kernel evdev hotkey pipeline
-// (pkg/hotkey) to the daemon's cycle state machine (hotkey.Hub).
-//
-// On every physical key edge the evdev backend reports, Reader
-// decides — based on the configured HOLD / TOGGLE mode — whether
-// to start a new cycle (mint an inject_token via cycletoken.Store,
-// call Hub.Start) or end the in-flight one (call Hub.End). The
-// gRPC-side StartCycle adapter call reuses the same Hub + token
-// store so the two trigger paths share a single source of truth.
+// Package hotkeyreader bridges the kernel evdev pipeline
+// (pkg/hotkey) into the daemon-side cycle state machine
+// (hotkey.Hub). The evdev backend and the gRPC StartCycle path
+// converge on the same Hub + cycletoken.Store, so a UI subscribing
+// via StreamHotkeyEvents sees identical state regardless of which
+// trigger started a cycle.
 package hotkeyreader
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -21,9 +17,6 @@ import (
 	a2textv1 "github.com/partyzanex/a2text/pkg/proto/a2text/v1"
 )
 
-// Reader owns the evdev listener goroutine and translates raw key
-// edges into Hub.Start / Hub.End calls, minting fresh tokens via
-// cycletoken.Store on each cycle start.
 type Reader struct {
 	log    *slog.Logger
 	mode   a2textv1.HotkeyMode
@@ -32,9 +25,6 @@ type Reader struct {
 	evdev  *pkghotkey.EvdevHotkey
 }
 
-// New constructs a Reader bound to the given key / modifiers and
-// the daemon's Hub + token store. log may be nil; it is replaced
-// with a discard handler.
 func New(
 	log *slog.Logger,
 	mode a2textv1.HotkeyMode,
@@ -64,8 +54,6 @@ func New(
 	return reader, nil
 }
 
-// Listen blocks until ctx is cancelled or the underlying evdev
-// listener stops. Intended to run in its own goroutine.
 func (r *Reader) Listen(ctx context.Context) error {
 	if err := r.evdev.Listen(ctx); err != nil {
 		return fmt.Errorf("hotkeyreader: listen: %w", err)
@@ -74,8 +62,6 @@ func (r *Reader) Listen(ctx context.Context) error {
 	return nil
 }
 
-// Close stops the evdev listener. Intended for use from the
-// shutdown manager.
 func (r *Reader) Close() error {
 	if r.evdev == nil {
 		return nil
@@ -88,12 +74,6 @@ func (r *Reader) Close() error {
 	return nil
 }
 
-// onEdge is the handler the evdev backend invokes on every key
-// transition. Translation depends on mode:
-//
-//   - HOLD   : PRESS → cycle start, RELEASE → cycle end.
-//   - TOGGLE : every PRESS flips the cycle on/off; RELEASE is
-//     suppressed by the evdev backend mode-decoder.
 func (r *Reader) onEdge(ctx context.Context, evt pkghotkey.Event) {
 	if r.mode == a2textv1.HotkeyMode_HOTKEY_MODE_HOLD {
 		r.handleHold(ctx, evt)
@@ -104,7 +84,6 @@ func (r *Reader) onEdge(ctx context.Context, evt pkghotkey.Event) {
 	r.handleToggle(ctx, evt)
 }
 
-// handleHold maps HOLD-mode edges 1:1 onto Hub.Start / Hub.End.
 func (r *Reader) handleHold(ctx context.Context, evt pkghotkey.Event) {
 	switch evt {
 	case pkghotkey.Press:
@@ -114,36 +93,33 @@ func (r *Reader) handleHold(ctx context.Context, evt pkghotkey.Event) {
 	}
 }
 
-// handleToggle inverts the cycle state on every press; release is
-// ignored. Issue is the authoritative state probe: it returns
-// ErrAlreadyActive when a cycle is in flight, so a failed Issue
-// here means "user wants to stop".
+// handleToggle uses Hub.IsRecording as the authoritative probe.
+// Issue's ErrAlreadyActive used to double as a state signal, but
+// that conflated "cycle in flight" with "transient Issue failure",
+// so any crypto/rand or hub fault would silently abort a real
+// cycle.
 func (r *Reader) handleToggle(ctx context.Context, evt pkghotkey.Event) {
 	if evt != pkghotkey.Press {
 		return
 	}
 
-	if !r.startCycle(ctx) {
+	if r.hub.IsRecording() {
 		r.hub.End()
+
+		return
 	}
+
+	r.startCycle(ctx)
 }
 
-// startCycle mints a fresh inject_token and asks Hub to begin a
-// cycle. Returns true when a new cycle was started, false when the
-// token store reports a cycle is already active (the caller decides
-// what to do with that signal, e.g. flip to End in TOGGLE mode).
-func (r *Reader) startCycle(ctx context.Context) bool {
+func (r *Reader) startCycle(ctx context.Context) {
 	tok, _, err := r.tokens.Issue()
 	if err != nil {
-		if errors.Is(err, cycletoken.ErrAlreadyActive) {
-			return false
-		}
-
 		r.log.Error("hotkeyreader: token issue failed",
 			slog.Any("error", err),
 		)
 
-		return false
+		return
 	}
 
 	if err := r.hub.Start(ctx, string(tok)); err != nil {
@@ -152,8 +128,13 @@ func (r *Reader) startCycle(ctx context.Context) bool {
 			slog.Any("error", err),
 		)
 
-		return false
+		// Single-slot store would stay locked until TTL; roll back
+		// so the next edge can issue again.
+		if consumeErr := r.tokens.Consume(tok); consumeErr != nil {
+			r.log.Warn("hotkeyreader: rollback of unused token failed",
+				slog.String("token", string(tok)),
+				slog.Any("error", consumeErr),
+			)
+		}
 	}
-
-	return true
 }

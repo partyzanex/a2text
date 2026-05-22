@@ -16,10 +16,22 @@ var errTLSPartial = errors.New(
 	"clid: mTLS requires all three of --cert, --key, --client-ca (or none)",
 )
 
-// loadServerTLS builds a *tls.Config suitable for a mTLS-only gRPC
-// server. Returns (nil, nil) when none of the three flags are set —
-// the caller treats that as "run in plaintext". Any other partial
-// combination returns errTLSPartial.
+// errTLSDisabled is returned by loadServerTLS when no mTLS material
+// is configured at all. It is a normal signal, not a failure: the
+// caller is expected to inspect it via errors.Is and pass a nil
+// *tls.Config to the server constructor so the listener runs in
+// plaintext (loopback dev only).
+//
+// Sentinel-instead-of-(nil,nil) keeps the function's return shape
+// honest — every success path returns a non-nil config, every
+// non-success path returns a non-nil error.
+var errTLSDisabled = errors.New("clid: mTLS disabled (no cert / key / client-ca supplied)")
+
+// loadServerTLS builds a *tls.Config suitable for an mTLS-only gRPC
+// server. Returns errTLSDisabled when none of the three flags are
+// set; the caller is expected to recognise that sentinel and switch
+// to plaintext mode. Any other partial combination is an operator
+// mistake and surfaces as errTLSPartial.
 //
 // The resulting config:
 //   - presents certFile / keyFile as the server certificate;
@@ -30,12 +42,15 @@ var errTLSPartial = errors.New(
 //   - pins MinVersion to TLS 1.3 — the daemon and the UI ship
 //     together so there is no legacy client to accommodate.
 func loadServerTLS(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
-	if certFile == "" && keyFile == "" && clientCAFile == "" {
-		return nil, nil //nolint:nilnil // intentional: nil config = plaintext mode signal.
+	switch {
+	case certFile == "" && keyFile == "" && clientCAFile == "":
+		return nil, errTLSDisabled
+	case certFile == "" || keyFile == "" || clientCAFile == "":
+		return nil, errTLSPartial
 	}
 
-	if certFile == "" || keyFile == "" || clientCAFile == "" {
-		return nil, errTLSPartial
+	if err := requireKeyFileMode(keyFile); err != nil {
+		return nil, err
 	}
 
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -43,14 +58,9 @@ func loadServerTLS(certFile, keyFile, clientCAFile string) (*tls.Config, error) 
 		return nil, fmt.Errorf("clid: load server keypair: %w", err)
 	}
 
-	pem, err := os.ReadFile(clientCAFile) //nolint:gosec // operator-supplied flag, not user input.
+	pool, err := loadClientCABundle(clientCAFile)
 	if err != nil {
-		return nil, fmt.Errorf("clid: read client CA bundle %q: %w", clientCAFile, err)
-	}
-
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("clid: no PEM-encoded certificates found in %q", clientCAFile)
+		return nil, err
 	}
 
 	return &tls.Config{
@@ -59,4 +69,45 @@ func loadServerTLS(certFile, keyFile, clientCAFile string) (*tls.Config, error) 
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		MinVersion:   tls.VersionTLS13,
 	}, nil
+}
+
+func loadClientCABundle(path string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(path) //nolint:gosec // operator-supplied flag, not user input.
+	if err != nil {
+		return nil, fmt.Errorf("clid: read client CA bundle %q: %w", path, err)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("clid: no PEM-encoded certificates found in %q", path)
+	}
+
+	return pool, nil
+}
+
+// keyFileMaxMode is the most permissive set of bits we tolerate on
+// the server TLS private key. Group/world read or write bits are
+// refused; only owner-read (0400) and owner-rw (0600) pass.
+const keyFileMaxMode os.FileMode = 0o600
+
+// requireKeyFileMode refuses to load a private key whose file
+// permissions are broader than 0600. The check is a defense in
+// depth — Go's tls.LoadX509KeyPair will happily read a world-
+// readable key, and operators sometimes commit "convenience"
+// permissions during dev that survive into production.
+func requireKeyFileMode(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("clid: stat key file %q: %w", path, err)
+	}
+
+	mode := info.Mode().Perm()
+	if mode&^keyFileMaxMode != 0 {
+		return fmt.Errorf(
+			"clid: key file %q has permissions %#o — must be %#o or stricter (chmod 600 %s)",
+			path, mode, keyFileMaxMode, path,
+		)
+	}
+
+	return nil
 }

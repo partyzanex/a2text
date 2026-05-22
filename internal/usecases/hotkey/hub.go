@@ -172,6 +172,18 @@ func (h *Hub) End() {
 	h.activeToken = ""
 }
 
+// IsRecording reports whether a cycle is in flight. Callers that
+// need to decide "start or stop" based on Hub state (TOGGLE-mode
+// hotkey reader) should consult this rather than relying on End's
+// no-op behaviour, so a transient probe error cannot be confused
+// with an in-flight cycle.
+func (h *Hub) IsRecording() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.state == a2textv1.HotkeyState_HOTKEY_STATE_RECORDING
+}
+
 // startKindLocked maps the active mode to the kind a cycle-start
 // event carries. Caller must hold h.mu.
 func (h *Hub) startKindLocked() a2textv1.HotkeyEventKind {

@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -78,7 +79,10 @@ func NewServer(
 	}
 
 	if tlsConfig != nil {
-		opts = append(opts, googlegrpc.Creds(credentials.NewTLS(tlsConfig)))
+		// gRPC retains the *tls.Config reference; clone so a caller
+		// that mutates the original after NewServer cannot reach into
+		// the running server's TLS handshake state.
+		opts = append(opts, googlegrpc.Creds(credentials.NewTLS(tlsConfig.Clone())))
 		log.Info("grpc: mTLS enabled",
 			slog.Int("server_certs", len(tlsConfig.Certificates)),
 		)
@@ -118,8 +122,23 @@ func (s *Server) Listen(ctx context.Context, addr string) (string, error) {
 	return bound, nil
 }
 
+// gracefulStopTimeout caps how long Serve waits for in-flight RPCs
+// to drain after ctx is cancelled. A streaming client (a UI
+// subscribed to StreamHotkeyEvents, say) would otherwise keep
+// GracefulStop blocked forever, and systemd would have to SIGKILL
+// the daemon at the unit's TimeoutStopSec. 5 s is comfortably
+// longer than any plausible loopback RPC and well inside systemd's
+// default 90 s stop budget.
+const gracefulStopTimeout = 5 * time.Second
+
 // Serve blocks until ctx is cancelled or the underlying server
 // stops. It must be called after a successful Listen.
+//
+// On ctx cancellation Serve initiates GracefulStop and waits at
+// most gracefulStopTimeout for it to complete. If the deadline
+// fires (e.g. a streaming RPC is still alive) Serve falls back to
+// the immediate Stop path so the daemon exits within a bounded
+// budget regardless of client behaviour.
 func (s *Server) Serve(ctx context.Context) error {
 	if s.grpc == nil || s.listener == nil {
 		return errServeBeforeListen
@@ -133,8 +152,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		s.log.Info("grpc: context done, initiating graceful stop")
-		s.grpc.GracefulStop()
+		s.gracefulThenForceStop()
 
 		return nil
 	case err := <-errCh:
@@ -155,6 +173,35 @@ func (s *Server) Close() error {
 	}
 
 	return nil
+}
+
+// gracefulThenForceStop runs GracefulStop in a goroutine and waits
+// up to gracefulStopTimeout for it to return. On timeout it calls
+// the immediate Stop, which aborts active streams and unblocks any
+// handler waiting on stream.Context. Extracted from Serve so the
+// timeout / fallback shape stays readable.
+func (s *Server) gracefulThenForceStop() {
+	s.log.Info("grpc: context done, initiating graceful stop",
+		slog.Duration("grace", gracefulStopTimeout),
+	)
+
+	done := make(chan struct{})
+
+	go func() {
+		s.grpc.GracefulStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return
+	case <-time.After(gracefulStopTimeout):
+		s.log.Warn("grpc: graceful stop budget exhausted, forcing immediate stop",
+			slog.Duration("grace", gracefulStopTimeout),
+		)
+		s.grpc.Stop()
+		<-done
+	}
 }
 
 // --- single-client guard ----------------------------------------------------

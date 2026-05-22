@@ -32,22 +32,16 @@ import (
 )
 
 const (
-	// injectTokenTTL bounds how long an inject_token issued by
-	// StartCycle (or the hotkey reader) stays valid before the
-	// cycletoken.Store marks it expired. 30 s comfortably covers
-	// the longest plausible dictation + STT round-trip while still
-	// invalidating stale tokens from a crashed UI.
-	injectTokenTTL = 30 * time.Second
+	// 120s covers a long dictation + slow STT round-trip while still
+	// invalidating tokens from a crashed UI.
+	injectTokenTTL = 120 * time.Second
 
-	// shutdownTimeout caps how long the LIFO close chain may run
-	// before the daemon force-exits. Keeps a stuck closer from
-	// blocking systemd's stop sequence.
+	// 10s leaves room for the closer chain without blocking systemd's
+	// stop sequence (default TimeoutStopSec=90s).
 	shutdownTimeout = 10 * time.Second
 
-	// secretsDirMode is the permission for the secrets directory.
-	// 0700 prevents other users on a multi-user system from listing
-	// the daemon's credential file even though the file itself is
-	// already 0600.
+	// 0700 keeps the secrets dir invisible to other local users; the
+	// file inside is already 0600.
 	secretsDirMode os.FileMode = 0o700
 )
 
@@ -61,7 +55,7 @@ func runDaemon(
 	logger *slog.Logger,
 ) error {
 	hotkeyMode := mapHotkeyMode(cfg.Hotkey.Mode)
-	injectMode := mapInjectMode(cfg.Output.Mode)
+	injectMode := mapInjectMode(cfg.Output.Mode, logger)
 
 	logger.Info("bootstrap: configuration resolved",
 		slog.String("hotkey_mode", hotkeyMode.String()),
@@ -97,8 +91,8 @@ func runDaemon(
 		return err
 	}
 
-	if pprofErr := startPprof(signalCtx, cmd.String(FlagPprof), logger); pprofErr != nil {
-		return fmt.Errorf("bootstrap: start pprof: %w", pprofErr)
+	if pprofErr := startValidatedPprof(signalCtx, cmd.String(FlagPprof), logger); pprofErr != nil {
+		return pprofErr
 	}
 
 	reader, err := buildHotkeyReader(logger, hotkeyMode, tokens, hub, cfg)
@@ -109,6 +103,25 @@ func runDaemon(
 	mgr := buildShutdownChain(driver, grpcSrv, reader)
 
 	return serveUntilDone(signalCtx, logger, grpcSrv, reader, mgr)
+}
+
+// startValidatedPprof validates that the pprof bind address is on
+// the loopback interface (defense in depth — pprof exposes heap and
+// goroutine state) and starts the endpoint. Empty addr is a no-op.
+func startValidatedPprof(ctx context.Context, addr string, log *slog.Logger) error {
+	if addr == "" {
+		return nil
+	}
+
+	if err := requireLoopbackAddr(addr); err != nil {
+		return fmt.Errorf("bootstrap: validate --pprof: %w", err)
+	}
+
+	if err := startPprof(ctx, addr, log); err != nil {
+		return fmt.Errorf("bootstrap: start pprof: %w", err)
+	}
+
+	return nil
 }
 
 // buildGRPCServer loads optional mTLS material, constructs the
@@ -126,13 +139,18 @@ func buildGRPCServer(
 		cmd.String(FlagKeyFile),
 		cmd.String(FlagClientCAFile),
 	)
-	if err != nil {
+	if err != nil && !errors.Is(err, errTLSDisabled) {
 		return nil, fmt.Errorf("bootstrap: load mTLS: %w", err)
+	}
+
+	listenAddr := cmd.String(FlagListenAddr)
+	if err := requireLoopbackAddr(listenAddr); err != nil {
+		return nil, fmt.Errorf("bootstrap: validate --listen: %w", err)
 	}
 
 	grpcSrv := infragrpc.NewServer(logger, kbSvc, secSvc, tlsConfig)
 
-	if _, lErr := grpcSrv.Listen(signalCtx, cmd.String(FlagListenAddr)); lErr != nil {
+	if _, lErr := grpcSrv.Listen(signalCtx, listenAddr); lErr != nil {
 		return nil, fmt.Errorf("bootstrap: listen: %w", lErr)
 	}
 
@@ -241,15 +259,24 @@ func mapHotkeyMode(mode config.VoiceHotkeyMode) a2textv1.HotkeyMode {
 }
 
 // mapInjectMode converts the config-level output mode to the proto
-// inject-mode enum. "stdout" maps to CLIPBOARD (no real injection;
-// daemon just records the cycle in audit logs) because the new
-// architecture has no stdout sink on the daemon side. "clipboard"
-// also maps to CLIPBOARD; "clipboard_autopaste" → PASTE.
-func mapInjectMode(mode string) a2textv1.InjectMode {
+// inject-mode enum.
+//
+//   - "clipboard_autopaste" → PASTE
+//   - "clipboard" / "stdout" → CLIPBOARD (no real injection; the
+//     daemon side has no stdout sink)
+//   - anything else → CLIPBOARD + warn-log so the operator sees the
+//     mismatch instead of silently falling through.
+func mapInjectMode(mode string, log *slog.Logger) a2textv1.InjectMode {
 	switch mode {
 	case config.VoiceOutputModeClipboardAutopaste:
 		return a2textv1.InjectMode_INJECT_MODE_PASTE
+	case config.VoiceOutputModeClipboard, config.VoiceOutputModeStdout:
+		return a2textv1.InjectMode_INJECT_MODE_CLIPBOARD
 	default:
+		log.Warn("bootstrap: unknown output mode — falling back to CLIPBOARD",
+			slog.String("configured_mode", mode),
+		)
+
 		return a2textv1.InjectMode_INJECT_MODE_CLIPBOARD
 	}
 }
@@ -293,7 +320,7 @@ func ensureParentDir(path string, mode os.FileMode) error {
 			return fmt.Errorf("parent %q exists and is not a directory", dir)
 		}
 
-		return nil
+		return tightenDirMode(dir, info.Mode().Perm(), mode)
 	}
 
 	if !errors.Is(err, os.ErrNotExist) {
@@ -303,6 +330,29 @@ func ensureParentDir(path string, mode os.FileMode) error {
 	// Same source-of-truth as the Stat call above (operator config / XDG env).
 	if err := os.MkdirAll(dir, mode); err != nil { //nolint:gosec // see comment above.
 		return fmt.Errorf("mkdir %q: %w", dir, err)
+	}
+
+	return nil
+}
+
+// tightenDirMode chmod's the directory down to want when the
+// observed permission set is broader. We never widen permissions —
+// if the operator chose 0700 we keep 0700 even when the caller
+// asked for 0755. The asymmetry is deliberate: the secrets
+// directory is the only caller today and "no looser than caller
+// asked" is exactly the desired safety property.
+//
+// "Broader" is detected via `current &^ want != 0`: any bit set in
+// current that is not set in want.
+func tightenDirMode(dir string, current, want os.FileMode) error {
+	if current&^want == 0 {
+		return nil
+	}
+
+	// dir is the same operator-supplied / XDG-derived path tightenDirMode
+	// got from ensureParentDir. No untrusted user input.
+	if err := os.Chmod(dir, want); err != nil { //nolint:gosec // see comment.
+		return fmt.Errorf("chmod %q to %#o: %w", dir, want, err)
 	}
 
 	return nil
